@@ -17,9 +17,18 @@ Reference firmware: [`drifter_a7670_cat1/drifter_a7670_cat1.ino`](drifter_a7670_
 
 - `seq` — monotonic per-device counter. Survives deep sleep (RTC memory) **and** power loss (NVS). The server dedups and detects gaps by `seq`.
 - `ts_fix` — the GPS UTC time of the fix (the observation time). Legacy `ts` is sent with the same value for older ingest servers (schema 1.0→1.1 mapping).
-- `sample_interval_s` — declared nominal cadence (required by the schema for mixed-cadence weighting).
+- `sample_interval_s` — the sleep time chosen after this record (voltage-adaptive since 2026-09-26; required by the schema for mixed-cadence weighting).
+- `flags` — recovery bits (2026-09-26): `0x01` recover-request · `0x02` out of recovery zone · `0x04` stranded (within 50 m for 6 h) · `0x08` last report before shutdown (first time below 3.55 V) · `0x10` revived (was low, recovered above 3.75 V). `0` = normal.
 - `fix_quality` — HDOP from the L76K (omitted when invalid); `gnss_source:"l76k"`.
 - **Store-and-forward**: up to 16 records buffer in RTC memory across sleep cycles; a cellular dead zone does not lose observations. Power loss drops the buffer (documented tradeoff) but never reuses a `seq`.
+
+## Test paths and recovery mode (2026-09-26)
+
+- **Wi-Fi test mode** (`USE_WIFI 1`, added 2026-09-12): the ESP32 sends over Wi-Fi (phone hotspot or office AP, 2.4 GHz only) so you can prove GPS and server round-trip before a SIM arrives. Wi-Fi drops within tens of metres of the bank — **set `USE_WIFI 0` (LTE) before release.**
+- **Voltage-adaptive interval** (`ADAPTIVE_INTERVAL`): ≥3.90 V 60 min · ≥3.70 V 120 min · ≥3.50 V 360 min · below 720 min. Out of the recovery zone with ≥3.90 V: 30 min.
+- **Recovery zone**: set `ZONE_LAT`, `ZONE_LON`, `ZONE_RADIUS_M` per release site (radius 0 disables).
+- **Low-battery memory in NVS**: the protection circuit may cut power and wipe RTC memory, so the "was low" mark survives in NVS to produce the `revived` flag.
+- All thresholds are initial values. **Not yet compiled or bench-tested as of 2026-09-26.**
 
 ## Toolchain
 

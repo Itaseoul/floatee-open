@@ -1,4 +1,6 @@
-# SEA:CUT Drifter / Friendly Floatee
+# Floatee Open — river-to-sea drifter (SEA:CUT)
+
+> Renamed from `Itaseoul/seacut` on 2026-09-26. Old links redirect here. **Floatee** is the public name; **SEA:CUT** remains the name of the underlying technology.
 
 Open-source, non-profit river-to-sea litter drifter. A low-cost GPS + cellular float you release into a river, track from anywhere, and recover. It maps how floating trash travels from source to sea, so communities know where to place booms and cleanups.
 

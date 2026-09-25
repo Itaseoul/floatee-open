@@ -4,8 +4,8 @@ message: "If you use this design, firmware, docs, or data, please cite it. Cite 
 type: software
 authors:
   - name: "사단법인 이타서울 (Itaseoul) / GAA (Global Adopt-a-Beach Alliance) and contributors"
-repository-code: "https://github.com/Itaseoul/seacut"
-url: "https://github.com/Itaseoul/seacut"
+repository-code: "https://github.com/Itaseoul/floatee-open"
+url: "https://github.com/Itaseoul/floatee-open"
 license:
   - CERN-OHL-S-2.0
   - MIT
