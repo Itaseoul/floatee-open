@@ -24,6 +24,7 @@ partly submerged circular cylinder**, radius R = 45 mm (bottle_id 90). Standard 
 - Displaced volume `V = mass / ρ_water`; solve the waterline height `h` so the submerged circular
   segment × body length equals V. At the ~153 g reference mass the bottle floats high (~13% submerged,
   73 mm freeboard) — it is buoyancy-rich, as intended (a sealed 1 L bottle has ~4.8× reserve).
+  **Correction 2026-09-26:** the 1 L bottle is no longer recommended (the 84×112 mm panel does not fit). The default housing is a 1.5 L wide-mouth screw-lid container, and the panel, PCM, external holder and steel plate change the mass. All 1 L numbers here must be recalculated for the 1.5 L wide-mouth container once the product is chosen.
 - **KB** = centroid of the submerged area (numeric integration). **BM** = `I_waterplane / V`.
 - **KG** = mass-weighted centroid of the component budget (ballast low, board/antenna high).
 - **GM = KB + BM − KG** — the metacentric height. GM > 0 ⇒ initially stable in roll.

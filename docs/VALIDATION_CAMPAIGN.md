@@ -26,7 +26,7 @@ Exit criterion: F1+F2 pass → the unit is a **Verified Float** (`verified_build
 
 Only the org can do these; start them early because they gate the water day.
 
-- [ ] **Radio.** A hand-built cellular device for outdoor multi-unit use needs the RRA research/development exemption (form 12, ≤ 1,500 units) — Korea. Elsewhere: your national radio authority, or lean on a global IoT roaming SIM. See [DEPLOY_responsibly.md](DEPLOY_responsibly.md).
+- [ ] **Radio.** Korea (updated 2026-09-26): one unit per model imported for personal use needs no application; the RRA research/development exemption (≤ 1,500 units) is needed for **two or more units of the same model** or several units in the org's name. Elsewhere: your national radio authority, or lean on a global IoT roaming SIM. See [DEPLOY_responsibly.md](DEPLOY_responsibly.md).
 - [ ] **Water manager.** Pick an **ordinary tributary reach** (managed by the city/district), not a national river / protected zone, for the first pilot. Get the sign-off. (Nakdong main channel + estuary = national + natural-monument = do **not** start there.)
 - [ ] **Notify** nearby fishers / harbor / any water users so a sealed electronic box is expected, not an alarm.
 - [ ] **Recovery plan.** Who retrieves, from where, with what (pole/net/boat). Recovery is the identity, not an afterthought.

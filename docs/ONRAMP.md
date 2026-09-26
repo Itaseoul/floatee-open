@@ -12,9 +12,11 @@ Lower tiers are always open — start where your budget and skills are, move up 
 |---|---|---|---|---|
 | School / citizen / low-resource | **Tier 0** phone-in-a-bottle | 5–35 | none | prove the pipeline with 0 lines of code |
 | Maker beginner | **Tier 1** cellular bottle (default) | 40–80 | none (JST/uFL/USB) | the default upcycled float |
-| Estuary / long-dwell | **Tier 1.5** solar-assisted | 65–100 | a little | extend reporting life |
+| Estuary / long-dwell | **Tier 1.5** solar-assisted (6 V flat panel on the lid) | 65–100 | yes (PCM wires, zener) | extend reporting life |
 | City / repeated campaigns | **Tier 2** robust | 90–180 | none–little | durable reusable unit |
-| Research / long autonomous | **Tier 3** | 180+ | yes | long deployment |
+| Research / open sea | **Tier 3** = Iridium satellite (research only, not adopted before a KC check) | 180+ | yes | beyond cellular coverage |
+
+Update 2026-09-26: the Korean participant build is **one kit** (about KRW 92,908) with the flat solar panel included, and a **deployment build needs soldering** (PCM wires to the external holder plates, zener across the solar JST leads). Only a bare bench test runs solder-free.
 
 Full tier table and parts: [../README.md](../README.md) · [../hardware/BOM.md](../hardware/BOM.md).
 

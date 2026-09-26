@@ -52,7 +52,7 @@ Pick the lowest tier that answers your question. A river survey with a handful o
 
 - **Tier 0 — Phone-in-a-Bottle** (~USD 5–35): a reused smartphone + a GPS-logging app in a sealed bottle. Proves the whole chain (device → server → map) for almost nothing, anywhere, from e-waste. Use it first.
 - **Tier 1 — Cellular Bottle** (~USD 50–70, **the movement default**): an ESP32 cellular board inside an upcycled PET bottle. The most diffusible, the cheapest that still runs unattended, and it is literally the litter it studies.
-- **Tier 1.5 — Solar-assisted long-dwell** (Tier 1 + a wrap-around thin-film cell): for long-dwell monitoring where recovery may take weeks — see [../hardware/TIER1_5_SOLAR_DRIFTER.md](../hardware/TIER1_5_SOLAR_DRIFTER.md).
+- **Tier 1.5 — Solar-assisted long-dwell** (Tier 1 + a 6 V flat panel on the container lid; updated 2026-09-26, the wrap-around thin-film cell is no longer used): for long-dwell monitoring where recovery may take weeks — see [../hardware/TIER1_5_SOLAR_DRIFTER.md](../hardware/TIER1_5_SOLAR_DRIFTER.md).
 - **Tier 2 — Reusable Robust** (~USD 90–130): bolt-sealed IP-rated case, external antennas, temperature-protected charging, self-righting keel. For repeated, cold, or harsh campaigns — not the starting point.
 
 **The full parts list for every tier, with per-function local substitutions, lives in [../hardware/BOM.md](../hardware/BOM.md).** That is the one table to keep current; this page intentionally does not copy it.
@@ -80,7 +80,7 @@ The reference build uses the **T-A7670G R2** (global variant) to maximize band c
 
 SIM options, easiest first:
 - **Global IoT SIM** (1NCE, Soracom): one SIM works across many countries; ideal for a hand-built device because it roams and sidesteps local device-registration. Confirm which local carriers it roams onto in your country (e.g. in Korea it roams on KT/SKT, not LG U+). Soracom only matters where its partner carriers have coverage — in a single-country pilot a local prepaid SIM is often simpler and cheaper.
-- **Local prepaid data SIM**: cheapest per-country; confirm a hand-built (non-certified) device is allowed to attach to data.
+- **Local prepaid data SIM**: cheapest per-country; confirm a hand-built (non-certified) device is allowed to attach to data. (Korea: a voice-inclusive plan on a domestic SIM, activated in a phone first; data-only plans can refuse unregistered devices.)
 
 **No cellular coverage** (remote/rural rivers)? The reference firmware is cellular-only; LoRa is a *documented alternative backhaul, not part of the reference build*. Meshtastic runs license-exempt ISM bands (868 MHz EU/Africa · 915 MHz Americas/Australia · 923 MHz most of Asia · KR920 920–923 MHz Korea) but needs one or two community gateways with line of sight. It is out of scope for this repo's firmware; follow the upstream Meshtastic project docs if you take that path.
 
@@ -115,12 +115,13 @@ Against a ~$27 cellular unit, real-time open-ocean tracking (Iridium) is **~10×
 Only two parts are spec-critical to source. Everything else is generic hardware you already have locally.
 
 - **Cellular board.** Check a local distributor first — faster, no customs, local warranty, and the seller has already cleared type-approval. If it is not sold locally, the manufacturer's own official store (e.g. their factory-direct AliExpress store) is usually the cheapest source. Express couriers (DHL/FedEx) are fast but the shipping can equal the board on a single-unit order and may add a customs-brokerage fee even under your country's duty-free threshold; standard/postal is slower but often cheaper landed. A hand-built cellular device is regulated somewhere — see [DEPLOY_responsibly.md](DEPLOY_responsibly.md); buying a locally-stocked board sidesteps the personal-import approval question.
-- **Solar film (Tier 1.5 only) — the one part where a cheap local panel can silently break the design.** "Flexible thin-film" is a *form factor*, not a material, and the material decides RF and toxicity:
+- **Solar (updated 2026-09-26).** The current design is a **flat 6 V panel** (reference SZH-SPB017, 84×112 mm, 220 mA) outside on the container lid, into the board's JST P1 (SOLAR_IN) and on-board CN3065, with a **5.6 V 5 W zener (1N5339B)** across the leads because the CN3065 absolute maximum is 6.5 V. The thin-film notes below are kept for builders who still use film.
+- **Solar film (older wrap design) — the one part where a cheap local panel can silently break the design.** "Flexible thin-film" is a *form factor*, not a material, and the material decides RF and toxicity:
   - **a-Si (amorphous silicon), ETFE/plastic front — recommended.** Non-metal → RF-transparent (B5), non-toxic, cheap (small 5–6 V panels ~$5–20). The drifter's low power budget does not need high efficiency, so this is the rare case where the cheapest option is also the correct one.
   - **CIGS** — higher efficiency, but the common flexible CIGS is on a **stainless-steel** substrate (industry-standard, since CIGS needs >500 °C processing) = a metal RF shield over the antenna = disqualified. Only Cd-free CIGS on **polyimide** (non-metal) is acceptable, and it is less common and more expensive. Do not pay more for CIGS here.
   - **CdTe / perovskite — no** (toxicity / immaturity / RF).
   - Rule regardless of source: **verify the substrate is non-metal.** A steel-backed panel kills the radio even if everything else is perfect.
-- **Everything else is local:** protected 18650 cell, SIM, uFL antennas, the PET bottle, ballast (a fishing sinker), marine sealant, bright tape / QR label / recovery loop, and the printed inserts (print them yourself). None need importing.
+- **Everything else is local:** 18650 cell with a protection circuit (Korean kit: unprotected Samsung 30Q in an external holder + PCM, 3.7 V 1-cell, continuous ≥3 A), SIM, uFL antennas, the PET bottle, ballast (a fishing sinker), marine sealant, bright tape / QR label / recovery loop, and the printed inserts (print them yourself). None need importing.
 
 ---
 
@@ -136,7 +137,8 @@ Generic checklist (applies everywhere):
 - **Start small and honest.** A few units, recover them all, learn recovery rate and drift behavior, then size a larger release from what you measured — not from a round number.
 
 Worked example — Korea (one locale among many):
-- **Radio:** a hand-built cellular device for outdoor multi-unit use is subject to conformity assessment; obtain a research/development exemption confirmation from the national radio agency (RRA, form 12, up to 1,500 units) before releasing. A global IoT roaming SIM (KT/SKT) avoids local device-registration.
+- **Radio (updated 2026-09-26):** one unit per model imported by an individual for personal use needs no application. The research/development exemption confirmation (RRA, up to 1,500 units) is needed only for **two or more units of the same model**, or several units in an organisation's name. Participants each buy one unit in their own name.
+- **SIM:** each participant uses their **own domestic SIM in their own name**. Korea domestic route: HelloMobile Slim 500MB on the LG U+ network (NFC SIM KRW 8,800, KRW 1,700/month), voice-inclusive plan, activate in a phone first, then move it to the board. The A7670G covers all three Korean carriers' LTE bands. Global IoT roaming SIMs (KT/SKT only) remain an option.
 - **Water:** the Nakdong main channel and estuary are a national river plus a natural-monument/wetland protected zone (national-level consent). An ordinary tributary stream (managed by the city/district) is the low-friction pilot site and is still genuinely "source to sea" because the tributary flows to the estuary.
 - The rest (battery safety, recovery-first, wildlife, notify water users) is the same universal set above.
 

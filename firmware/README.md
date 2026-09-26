@@ -39,9 +39,14 @@ Reference firmware: [`drifter_a7670_cat1/drifter_a7670_cat1.ino`](drifter_a7670_
 ## Configure
 
 - `DEVICE_ID` — pair it with the unit metadata directory `unit_id` (schema §3).
-- `APN` for your SIM (Soracom `soracom.io` user/pass `sora`; 1NCE `iot.1nce.net`; KT MVNO `lte.ktfwing.com`; SKT MVNO `lte.sktelecom.com`). Global IoT SIMs roam on KT/SKT only — no LG U+.
+- `APN` for your SIM (Soracom `soracom.io` user/pass `sora`; 1NCE `iot.1nce.net`; KT MVNO `lte.ktfwing.com`; SKT MVNO `lte.sktelecom.com`; LG U+ and U+ MVNOs such as HelloMobile `internet.lguplus.co.kr`). The A7670G covers the LTE bands of all three Korean carriers (B1/B3/B5/B7/B8). The "no LG U+" limit applies only to **global IoT roaming SIMs** (1NCE / Soracom roam on KT/SKT only); a participant's own domestic LG U+ SIM is fine on paper, but not yet tested on this board. In Korea use a **voice-inclusive plan** and activate the SIM in a phone first, then move it to the board.
 - `SERVER_HOST` / `SERVER_PATH` — bench with the bundled `ingest_server.py` (`BENCH_HTTP 1`), then promote to HTTPS (`BENCH_HTTP 0`).
+- `ADAPTIVE_INTERVAL` — `true` by default (voltage-adaptive interval). For bench tests set it to `false` **together with** `SLEEP_MINUTES = 5`; otherwise the voltage tiers override `SLEEP_MINUTES`.
 - `SLEEP_MINUTES` — see [hardware/ELECTRONICS_POWER.md](../hardware/ELECTRONICS_POWER.md) for the honest endurance table (all figures estimates pending bench measurement).
+
+## SIM attach test (`sim_check/`)
+
+[`sim_check/sim_check.ino`](sim_check/sim_check.ino) checks only whether a SIM attaches to a network on this board, without our server: modem AT response → SIM ready (`AT+CPIN?`, ICCID, IMEI) → network registration (`AT+CEREG?`, up to 3 min; 1 = home, 5 = roaming) → IP → one plain HTTP GET to `http://example.com`. Results print on the serial monitor at 115200; afterwards the monitor passes AT commands straight to the modem. Default APN is `internet.lguplus.co.kr`; uncomment the SKT or KT line for those networks. Before inserting the SIM: power off, connect the LTE antenna first, and turn off the SIM PIN lock and the carrier's SIM-protection service. Compiles as of 2026-09-26; not yet run on a board.
 
 ## Gotchas
 

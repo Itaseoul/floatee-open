@@ -21,7 +21,7 @@ Wake on a timer, get a GPS fix, POST one small JSON ping over the cellular netwo
    sleep <-------------------------------------------- 200 OK
 ```
 
-This is cellular (LTE), not satellite. Coverage is river, estuary, and near-coast where mobile networks reach. Open-sea tracking would need a separate satellite backhaul and is out of scope for this build.
+This is cellular (LTE), not satellite. Coverage is river, estuary, and near-coast where mobile networks reach. Open-sea tracking would need a separate satellite backhaul and is out of scope for this build. (Tier 3 = Iridium satellite is research only; it is not adopted before a KC radio-certification check.)
 
 ### Where this fits (and what it is not)
 
@@ -32,7 +32,7 @@ This is the **upstream measurement layer**, not an interceptor. It does not remo
 Open-source hardware spreads on a few strong universal rules plus local adaptation, not on the absence of caveats.
 
 1. Recover what you release. A device left in the water is the very problem we fight. Design for recovery, track it, go get it.
-2. Safe power, no toxics. Protected Li-ion, no charging below 0 C or cooking above 45 C, contain a cell failure, non-metallic housing.
+2. Safe power, no toxics. Li-ion behind a protection circuit (PCM, cuts over-discharge, over-charge and short circuit), no charging below 0 C or cooking above 45 C, contain a cell failure, non-metallic housing.
 3. Do no harm to the water or its users. Smooth non-entangling shapes, avoid protected areas and seasons, tell nearby water users.
 4. Own your deployment, follow your local rules. See [docs/DEPLOY_responsibly.md](docs/DEPLOY_responsibly.md).
 
@@ -45,9 +45,11 @@ Open-source hardware spreads on a few strong universal rules plus local adaptati
 | Approx cost | USD 5–35 | USD 50–70 | USD 90–130 |
 | Best for | first pipeline test, any budget | the default upcycled float | long / cold / repeated campaigns |
 
+The tiers above are the historical reference. The current build for participants is **one participant kit** (about KRW 92,908 including the board; see [hardware/BOM.md](hardware/BOM.md)): recommended housing is a **1.5 L wide-mouth screw-lid container** (a PET bottle is for demos and short runs only), with a flat solar panel on the lid.
+
 Full parts list: [hardware/BOM.md](hardware/BOM.md). Reference board is the LILYGO T-A7670G R2 with onboard L76K GNSS (cellular LTE Cat.1 bis + separate GPS chip). Pick the A7670 band variant for your region.
 
-**Tier 1.5 (solar-assisted, long-dwell estuary)** — wrap-around thin-film cells extend reporting life for units that linger in-coverage for weeks; no extra printed part. ★Solar extends power, not coverage (open sea still needs satellite). See [hardware/TIER1_5_SOLAR_DRIFTER.md](hardware/TIER1_5_SOLAR_DRIFTER.md).
+**Tier 1.5 (solar-assisted, long-dwell estuary)** — a 6 V flat panel SZH-SPB017 (84×112 mm, 220 mA) mounted outside on the container lid extends reporting life for units that linger in-coverage for weeks; the panel is included in the participant kit. (Earlier wrap-around thin-film cells are no longer used.) ★Solar extends power, not coverage (open sea still needs satellite). See [hardware/TIER1_5_SOLAR_DRIFTER.md](hardware/TIER1_5_SOLAR_DRIFTER.md).
 
 ## 3D printed parts (parametric, OpenSCAD)
 
@@ -61,7 +63,7 @@ Each ships as `.scad` (editable source) and `.stl` (print + GitHub renders it in
 
 ## Firmware
 
-[firmware/](firmware/) — ESP32 + A7670 + L76K, single ping per wake. Library lewisxhe/TinyGSM-fork + TinyGPSPlus. Default 30-minute interval.
+[firmware/](firmware/) — ESP32 + A7670 + L76K, single ping per wake. Library lewisxhe/TinyGSM-fork + TinyGPSPlus. Report interval is voltage-adaptive by default (`ADAPTIVE_INTERVAL = true`): ≥3.9 V every 60 min, 3.7–3.9 V 120 min, 3.5–3.7 V 360 min, <3.5 V 720 min. Set `ADAPTIVE_INTERVAL = false` to use the fixed `SLEEP_MINUTES` (30 by default; 5 for bench tests).
 
 ## Data
 
@@ -81,7 +83,7 @@ Build a unit, release and recover it in your river, POST trajectories, add your 
 
 네 가지 규칙: (1) 회수한다 (2) 안전 전원·무독성 (3) 물·이용자·야생동물 무해 (4) 네 배포는 네가 책임·지역 규정 확인. 상세 [docs/DEPLOY_responsibly.md](docs/DEPLOY_responsibly.md).
 
-티어: Tier 0 폰+페트병(USD 5–35) / Tier 1 셀룰러+페트병(USD 50–70, 기본) / Tier 2 재사용 견고(USD 90–130). 부품표 [hardware/BOM.md](hardware/BOM.md). 기준 보드 LILYGO T-A7670G R2(온보드 L76K).
+티어: Tier 0 폰+페트병(USD 5–35) / Tier 1 셀룰러+페트병(USD 50–70) / Tier 2 재사용 견고(USD 90–130) / Tier 3 이리듐 위성형(연구용, KC 확인 전 채택 안 함). 지금 참여자에게 권하는 것은 티어 구분 없는 **참여자 키트 한 가지**(보드 포함 약 92,908원)다. 하우징은 **1.5L 광구 용기(나사 뚜껑)** 권장, 페트병은 시연·단기용. 뚜껑 위 바깥에 6V 평판 패널 SZH-SPB017(84×112 mm, 220 mA)을 얹으며 패널은 키트에 포함된다. 보고 간격은 전압에 따라 60~720분으로 바뀐다. 부품표 [hardware/BOM.md](hardware/BOM.md). 기준 보드 LILYGO T-A7670G R2(온보드 L76K).
 
 3D: 하우징이 폐페트병이라 프린트 부품은 3개(브래킷·밸러스트 킬·회수 고리)뿐. 파라메트릭 OpenSCAD라 병 규격만 바꾸면 된다. 전력·신뢰성 상세는 [hardware/ELECTRONICS_POWER.md](hardware/ELECTRONICS_POWER.md)·[hardware/RELIABILITY.md](hardware/RELIABILITY.md). 이 리포는 레퍼런스 설계이며 현장 검증(대량 방류 실증)은 준비 중이다.
 
