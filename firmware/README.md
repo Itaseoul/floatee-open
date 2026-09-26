@@ -28,11 +28,12 @@ Reference firmware: [`drifter_a7670_cat1/drifter_a7670_cat1.ino`](drifter_a7670_
 - **Voltage-adaptive interval** (`ADAPTIVE_INTERVAL`): ≥3.90 V 60 min · ≥3.70 V 120 min · ≥3.50 V 360 min · below 720 min. Out of the recovery zone with ≥3.90 V: 30 min.
 - **Recovery zone**: set `ZONE_LAT`, `ZONE_LON`, `ZONE_RADIUS_M` per release site (radius 0 disables).
 - **Low-battery memory in NVS**: the protection circuit may cut power and wipe RTC memory, so the "was low" mark survives in NVS to produce the `revived` flag.
-- All thresholds are initial values. **Not yet compiled or bench-tested as of 2026-09-26.**
+- All thresholds are initial values. **Compiles as of 2026-09-26 in all three modes (Wi-Fi, LTE bench HTTP, LTE HTTPS); not yet bench-tested on a board.**
 
 ## Toolchain
 
 - Arduino IDE, ESP32 Arduino core 3.0.x, board "ESP32 Dev Module"
+- Command line (verified 2026-09-26, core 3.0.7, arduino-cli 1.3.1): `arduino-cli compile -b esp32:esp32:esp32 firmware/drifter_a7670_cat1`. Flash use: Wi-Fi mode 949,785 bytes (72%), LTE bench 335,389 (25%), LTE HTTPS 338,797 (25%).
 - Libraries: **lewisxhe/TinyGSM-fork** (required; stock TinyGSM lacks the A7670 macro — uninstall stock), TinyGPSPlus, ArduinoHttpClient. `Preferences` ships with the core.
 
 ## Configure

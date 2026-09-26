@@ -11,11 +11,12 @@ SEA:CUT — ita.city 수신 파이프라인 (3단계, stdlib 전용)
   POST /api/ping             드리프터가 좌표 1점 전송 — FF-ID 스키마 v1.1(data/schema.md)
                              필수: device_id, lat, lon
                              v1.1: seq, ts_fix, sample_interval_s, fix_quality, gnss_source,
-                                   batt, site_id, motion_state (v1.0 "ts"는 ts_fix로 매핑)
+                                   batt, site_id, motion_state, flags (v1.0 "ts"는 ts_fix로 매핑)
                              ★(device_id, seq) 중복 재전송은 멱등 처리(재적재 안 함 — 펌웨어
                                store-and-forward 재시도 대비)
   GET  /api/live.geojson     실측 드리프터 궤적(단말별 LineString, ts_fix→seq 순 정렬)
   GET  /api/predicted.geojson 예측 결과: 최종위치 점군 + 앙상블 평균 경로
+  GET  /api/recovery.json    회수 목록: 마지막 레코드의 flags 가 0 이 아닌 단말
   GET  /                     Leaflet 지도(실측 + 예측 오버레이, 자동 새로고침)
 
 데이터
@@ -81,6 +82,37 @@ def live_geojson():
                                          "fix_quality": last.get("fix_quality")},
                           "geometry": {"type": "Point", "coordinates": coords[-1]}})
     return {"type": "FeatureCollection", "features": feats}
+
+
+# 펌웨어 F_* 비트와 같은 값(firmware/drifter_a7670_cat1 의 F_RECOVER 등).
+FLAG_NAMES = [(0x01, "recover"), (0x02, "out_of_zone"), (0x04, "stranded"),
+              (0x08, "last_report"), (0x10, "revived")]
+
+
+def recovery_report():
+    """회수 목록. 단말마다 마지막 레코드(ts_fix→seq 순)를 보고, 그 flags 가 0 이 아니면
+    목록에 올린다. flags 를 보내지 않는 구버전 단말은 평상으로 읽는다(목록에 안 올린다)."""
+    by_dev = {}
+    for p in _read_pings():
+        by_dev.setdefault(p["device_id"], []).append(p)
+    now = datetime.now(timezone.utc)
+    items = []
+    for dev, pts in by_dev.items():
+        pts.sort(key=lambda r: ((r.get("ts_fix") or r.get("ts") or ""), r.get("seq") or 0))
+        last = pts[-1]
+        fl = int(last.get("flags") or 0)
+        if not fl:
+            continue
+        seen = _parse_ts(last.get("server_recv_ts") or last.get("ts"))
+        items.append({"device_id": dev, "site_id": last.get("site_id"),
+                      "flags": fl, "reasons": [n for b, n in FLAG_NAMES if fl & b],
+                      "lat": last["lat"], "lon": last["lon"],
+                      "ts_fix": last.get("ts_fix"), "seq": last.get("seq"),
+                      "batt": last.get("batt"),
+                      "hours_since_recv": round((now - seen).total_seconds() / 3600, 1) if seen else None})
+    # 회수 요청·마지막 보고를 앞에, 그다음 오래 조용한 순
+    items.sort(key=lambda r: (-int(bool(r["flags"] & 0x09)), -(r["hours_since_recv"] or 0)))
+    return {"generated_at": now.isoformat(), "count": len(items), "devices": items}
 
 
 def _haversine_m(lat1, lon1, lat2, lon2):
@@ -304,6 +336,12 @@ class H(BaseHTTPRequestHandler):
                           "fix_quality", "gnss_source", "motion_state"):
                     if body.get(k) is not None:
                         rec[k] = body[k]
+                # 회수 플래그(schema §1 flags). 0 이면 평상. 범위 밖 값은 거부한다.
+                if body.get("flags") is not None:
+                    fl = int(body["flags"])
+                    if not 0 <= fl <= 0xFF:
+                        raise ValueError(f"flags out of range: {fl}")
+                    rec["flags"] = fl
                 # ★서버 부여 신원 + 고정 컨텍스트(schema §1) — 그래야 하류 표준 export(CF/STA)가
                 #   유효해진다(@iot.id·provenance 누락으로 K1 게이트 자기탈락하던 문제 해소).
                 #   ★서버가 실제로 아는 것만 부여한다 — builder·qc는 날조하지 않는다.
@@ -343,6 +381,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(predicted_geojson()))
         if p == "/api/qc.json":
             return self._send(200, json.dumps(qc_report()))
+        if p == "/api/recovery.json":
+            return self._send(200, json.dumps(recovery_report()))
         if p == "/api/game-drift/stats":
             return self._send(200, json.dumps(game_stats()))
         if p == "/api/game-drift.geojson":

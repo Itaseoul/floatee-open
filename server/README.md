@@ -24,6 +24,7 @@ curl -X POST http://localhost:8770/api/ping \
   -d '{"device_id":"river-001","site_id":"nakdong-hakjang","seq":1,"lat":35.10560,"lon":128.94310,"batt":4.02,"ts_fix":"2026-07-10T09:00:00Z","sample_interval_s":900,"fix_quality":1.4,"gnss_source":"l76k"}'
 # → {"ok":true, ...}   ; re-POST same seq → {"dup":true}
 curl http://localhost:8770/api/live.geojson                 # assembled track
+curl http://localhost:8770/api/recovery.json               # devices whose last record has non-zero flags
 ```
 
 ## Exposing it to a cellular device (★ the device is on LTE, not Wi-Fi)

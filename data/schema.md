@@ -31,6 +31,7 @@
 | **fix_quality** | number | no | HDOP(없으면 sat_count). 없으면 down-weight |
 | **gnss_source** | string | no | `l76k` / `phone` / `other` |
 | motion_state | string | no | 디바이스 힌트 `afloat`/`stranded`/`unknown`(서버도 추론) |
+| flags | integer | no | 회수 비트(0~255). `0x01` 회수 요청 · `0x02` 구역 이탈 · `0x04` 좌초 의심 · `0x08` 마지막 보고 · `0x10` 되살아남. 없거나 0 이면 평상. 번들 서버는 `GET /api/recovery.json` 으로 마지막 레코드가 0 이 아닌 단말을 모은다 |
 
 \* `ts_fix` 결측 핑은 거부하지 않고 §2 `ts_source=server_recv`로 **강등 수용**한다(`is_estimate` 상향; 버퍼 지연 전송 시 관측시각 신뢰 불가). 단 디바이스는 반드시 채워 보내는 것이 표준이다.
 
@@ -152,4 +153,5 @@ NOAA Global Drifter Program 관행 채택: 각 물리 유닛은 **방류·종료
 ## 8. Changelog · 하위호환
 
 - **1.0 → 1.1**: `ts`(모호) → `ts_fix`+`server_recv_ts`로 분리(1.0 `ts`는 `ts_fix`로 매핑). 신규 필수 `seq`·`sample_interval_s`; 신규 선택 `fix_quality`·`gnss_source`·`motion_state`·`qc`·`crs`. 유닛 메타데이터 디렉토리(§3)·QC(§4) 신설.
+- **1.1 추가(2026-09-26)**: 선택 필드 `flags`(회수 비트). 하위호환, 구버전 단말은 평상으로 읽는다.
 - 혼합 버전 집계 규칙: `schema_version` 별로 필드 매핑 후 합친다. 1.0 레코드는 `ts_source=device_fix` 가정하되 `sample_interval_s` 없으면 `raw`로 강등(가중 불가).
