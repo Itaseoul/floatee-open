@@ -10,6 +10,8 @@
  *   ★v1.2(2026-09-27): 저장소를 RTC 메모리 16건에서 플래시(LittleFS) 약 1,200건으로 옮겼다.
  *     전원이 끊겨도 남고, 넘치면 처음 경로와 최근 위치를 지키고 가운데를 솎는다.
  *     음영 구간에서 쌓인 것은 여러 건을 한 번에(JSON 배열) 보낸다. 벤치 확인 전.
+ *   ★v1.2 전력 최적화: 셀이 가득(4.05V↑)이면 30분 간격, CPU 80MHz, 접속 실패 시 재시도 간격을
+ *     두 배씩(최대 6시간), GPS 가 연속 실패하면 60초만 기다리되 6번에 한 번은 끝까지 기다린다.
  *   ★망이 안 잡혀도 fix는 버퍼에 남는다(하천 음영 구간). 다음 웨이크에 몰아 보낸다.
  *   ★도착 순서를 서버가 신뢰하지 않도록 각 레코드는 자기 ts_fix(GPS UTC)와 seq를 갖고 간다.
  *   ★저전압(배터리 방전)엔 모뎀 2A 피크를 피한다: fix만 버퍼에 남기고 전송을 미룬다(하단 저전압 가드).
@@ -99,9 +101,16 @@ const uint32_t GPS_FIX_TIMEOUT_MS = 180000;    // L76K 콜드스타트 여유(�
 //     배열을 받는지 확인되기 전에는 운영(BENCH_HTTP 0)에서 0 으로 둔다.
 #define BATCH_POST BENCH_HTTP
 const uint32_t BATCH_MAX = 20;
-// 좌초 의심 중이고 직전 접속이 실패했으면 모뎀 시도를 이 간격으로 줄인다(수신 없는 자리에서
-// 망 찾기로 배터리를 쓰지 않게). GPS 기록은 매 웨이크 그대로 쌓는다.
-const uint32_t STRANDED_TRY_MINUTES = 360;
+// 접속 실패 뒤 모뎀 재시도 간격(수신 없는 자리에서 망 찾기로 배터리를 쓰지 않게).
+// 연속 실패마다 두 배로 늘리고(60→120→240분), 좌초 의심이면 바로 최대치로 간다.
+// GPS 기록은 매 웨이크 그대로 쌓는다. 접속이 한 번 되면 처음으로 돌아간다.
+const uint32_t NET_BACKOFF_START_MINUTES = 60;
+const uint32_t STRANDED_TRY_MINUTES = 360;   // 백오프 최대치
+// 성능 최적화(2026-09-27)
+const uint32_t CPU_MHZ = 80;                 // 240→80MHz. GPS 대기 동안 칩 소모를 줄인다(Wi-Fi·모뎀 UART 는 80MHz 에서 동작)
+const uint32_t GPS_SHORT_TIMEOUT_MS = 60000; // GPS 가 연속 실패하면(숲 그늘 등) 이만큼만 기다린다
+const uint8_t  GPS_FAILS_FOR_SHORT  = 3;     // 연속 실패 몇 번부터 짧게 기다릴지
+const uint8_t  GPS_FULL_TRY_EVERY   = 6;     // 짧게 기다리는 동안에도 이 횟수마다 한 번은 끝까지 기다린다
 
 // ── 저전압 가드(재QA: LTE 송신 2A 피크가 방전 셀에서 브라운아웃을 일으켜 버퍼·seq를 날린다) ──
 // 임계값은 벤치 실측(T3 냉수·부하시험)으로 확정한다. 아래는 18650 방전곡선 기준 보수적 초깃값.
@@ -113,6 +122,8 @@ const uint32_t PARK_MULT      = 4;       // park 시 슬립 배수(30분×4=2시
 // ── 전압 기반 간격 + 회수 모드 (2026-09-26 추가, 설계서 「방류 전 점검과 회수 펌웨어」) ──
 // 전압이 곧 남은 충전량이다. 깰 때마다 재서 다음 잠 시간을 정한다. 값은 벤치 뒤 조정.
 const bool     ADAPTIVE_INTERVAL = true;  // false면 SLEEP_MINUTES 고정(벤치용)
+const float    V_FULL      = 4.05f;       // 이상: 30분. 가득 찬 셀은 충전이 멈춰 남는 햇빛을 더 잦은 보고에 쓴다
+const uint32_t FULL_MINUTES = 30;
 const float    V_TIER_1H   = 3.90f;       // 이상: 60분
 const float    V_TIER_2H   = 3.70f;       // 이상: 120분
 const float    V_TIER_6H   = 3.50f;       // 이상: 360분, 미만: 720분
@@ -214,6 +225,9 @@ RTC_DATA_ATTR bool     rtc_anchor_ok  = false;
 RTC_DATA_ATTR uint32_t rtc_last_sleep_m = 0;   // 직전 잠 시간(누적 계산용)
 RTC_DATA_ATTR uint32_t rtc_min_since_try = 0;  // 마지막 모뎀 시도 뒤 흐른 분
 RTC_DATA_ATTR bool     rtc_last_net_fail = false;
+RTC_DATA_ATTR uint8_t  rtc_net_fails = 0;      // 연속 접속 실패 횟수
+RTC_DATA_ATTR uint8_t  rtc_gps_fails = 0;      // 연속 GPS 실패 횟수
+RTC_DATA_ATTR uint8_t  rtc_gps_short_n = 0;    // 짧게 기다린 횟수(끝까지 기다릴 차례 계산)
 RTC_DATA_ATTR bool     rtc_last_stranded = false;
 
 // 두 좌표 거리(m), 하버사인
@@ -231,6 +245,7 @@ void nvsSetBool(const char* k, bool v) { prefs.begin("ffid", false); prefs.putBo
 // 전압(과 구역 이탈)으로 다음 잠 시간을 정한다
 uint32_t chooseIntervalM(float v, bool outZone) {
   if (!ADAPTIVE_INTERVAL || v < 1.0f) return SLEEP_MINUTES;   // USB 급전·측정 무효면 고정
+  if (v >= V_FULL) return min(FULL_MINUTES, outZone ? OUT_ZONE_MINUTES : FULL_MINUTES);
   if (v >= V_TIER_1H) return outZone ? OUT_ZONE_MINUTES : 60;
   if (v >= V_TIER_2H) return 120;
   if (v >= V_TIER_6H) return 360;
@@ -454,6 +469,7 @@ void setup() {
   gpio_hold_dis((gpio_num_t)BOARD_GPS_WAKEUP_PIN);
   gpio_hold_dis((gpio_num_t)MODEM_RST);
   gpio_hold_dis((gpio_num_t)BOARD_POWERON);
+  setCpuFrequencyMhz(CPU_MHZ);
   Serial.begin(115200);
   analogReadResolution(12);
   storeBegin();
@@ -474,7 +490,14 @@ void setup() {
 
   // ① GPS fix 먼저(망 없어도 관측은 남긴다 — store-and-forward의 요점)
   double lat = 0, lon = 0;
-  bool fixed = getFix(lat, lon);
+  uint32_t gpsTimeout = GPS_FIX_TIMEOUT_MS;
+  if (rtc_gps_fails >= GPS_FAILS_FOR_SHORT) {
+    rtc_gps_short_n++;
+    if (rtc_gps_short_n % GPS_FULL_TRY_EVERY != 0) gpsTimeout = GPS_SHORT_TIMEOUT_MS;
+  }
+  bool fixed = getFix(lat, lon, gpsTimeout);
+  if (fixed) { rtc_gps_fails = 0; rtc_gps_short_n = 0; }
+  else if (rtc_gps_fails < 255) rtc_gps_fails++;
   if (fixed) {
     PingRec r;
     r.lat = lat; r.lon = lon;
@@ -528,15 +551,25 @@ void setup() {
   }
 
   // ② 망 접속 → 버퍼 플러시
-  // 좌초 의심 + 직전 접속 실패면 모뎀 시도를 STRANDED_TRY_MINUTES 에 한 번으로 줄인다
-  if (rtc_last_stranded && rtc_last_net_fail && rtc_min_since_try < STRANDED_TRY_MINUTES) {
-    Serial.printf("[FF] 좌초 의심·직전 접속 실패 → 모뎀 생략(%lu/%lu분), 저장 %u건\n",
-                  (unsigned long)rtc_min_since_try, (unsigned long)STRANDED_TRY_MINUTES, (unsigned)storeCount());
+  // 접속 실패가 이어지면 모뎀 재시도 간격을 늘린다(좌초 의심이면 바로 최대치)
+  uint32_t backoffM = 0;
+  if (rtc_last_net_fail) {
+    backoffM = NET_BACKOFF_START_MINUTES << min((int)rtc_net_fails - 1, 3);
+    if (rtc_last_stranded || backoffM > STRANDED_TRY_MINUTES) backoffM = STRANDED_TRY_MINUTES;
+  }
+  if (backoffM && rtc_min_since_try < backoffM) {
+    Serial.printf("[FF] 접속 실패 %u회 → 모뎀 생략(%lu/%lu분), 저장 %u건\n",
+                  rtc_net_fails, (unsigned long)rtc_min_since_try, (unsigned long)backoffM, (unsigned)storeCount());
     deepSleep();
   }
   rtc_min_since_try = 0;
-  if (!netConnect()) { rtc_last_net_fail = true; deepSleep(); }
+  if (!netConnect()) {
+    rtc_last_net_fail = true;
+    if (rtc_net_fails < 255) rtc_net_fails++;
+    deepSleep();
+  }
   rtc_last_net_fail = false;
+  rtc_net_fails = 0;
 
   // ★★TLS-AUTH 훅(운영 HTTPS): 첫 connect 전에 CA를 심고 서버 인증서 검증을 켠다.
   //   아래는 하드웨어 검증 전이라 주석 처리 — README '보안·공급망' 절차대로 켜고 벤치에서
