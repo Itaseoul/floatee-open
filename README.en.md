@@ -9,7 +9,9 @@ Open-source, non-profit river-to-sea litter drifter. A low-cost GPS + cellular f
 
 Built by 사단법인 이타서울 / GAA and contributors. Inspired by the open-hardware movement (Precious Plastic, RepRap, OpenMetBuoy).
 
-License: firmware MIT · hardware CERN-OHL-S (reciprocal) · docs and data CC BY-SA 4.0 (ShareAlike). Improvements to designs, docs, and data stay open. OSHWA open-source-hardware certification: planned.
+License: firmware MIT · hardware CERN-OHL-S (reciprocal) · docs CC BY-SA 4.0 (ShareAlike) · data CC BY 4.0 (permissive, so pooled observations combine and cite freely). See [LICENSE-docs.md](LICENSE-docs.md). OSHWA open-source-hardware certification: planned.
+
+SDG relevance: SDG 14.1 (reduce marine pollution, including marine debris) by showing where river litter travels and stops before it reaches the sea; SDG 6.3 (water quality) and SDG 11.6 (municipal waste management) through the same river data. Policies: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) · [SECURITY.md](SECURITY.md) · [PRIVACY.md](PRIVACY.md) · [SAFETY_MINORS.md](SAFETY_MINORS.md).
 
 한국어는 아래 [한국어](#한국어) 참조.
 
