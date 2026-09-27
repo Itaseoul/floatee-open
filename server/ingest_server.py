@@ -294,7 +294,8 @@ class H(BaseHTTPRequestHandler):
             if ts_fix:
                 rec["ts_fix"] = ts_fix
             for k in ("site_id", "seq", "batt", "sample_interval_s",
-                      "fix_quality", "gnss_source", "motion_state"):
+                      "fix_quality", "gnss_source", "motion_state",
+                      "wake_mah_prev", "wake_s_prev", "i_peak_ma_prev"):
                 if body.get(k) is not None:
                     rec[k] = body[k]
             # 회수 플래그(schema §1 flags). 0 이면 평상. 범위 밖 값은 거부한다.

@@ -6,8 +6,8 @@
  *     지워지고 걸린 자리의 같은 좌표만 남는다. 이 파일이 그 두 가지를 고친다.
  *
  * 구조
- *   /ffq_v1.bin  PingRec 을 고정 크기로 이어 붙인 파일(웨이크당 한 줄 추가).
- *   /ffq_v1.hd   보낸 앞부분의 개수(head, 4바이트). 보낸 기록을 지우는 대신 이 값만 옮긴다.
+ *   /ffq_v2.bin  PingRec 을 고정 크기로 이어 붙인 파일(웨이크당 한 줄 추가).
+ *   /ffq_v2.hd   보낸 앞부분의 개수(head, 4바이트). 보낸 기록을 지우는 대신 이 값만 옮긴다.
  *   남은 기록 = (파일 레코드 수) − head. head 가 COMPACT_AT 을 넘으면 한 번에 정리한다.
  *
  * 넘칠 때(STORE_MAX) 솎는 규칙 — 들어간 경로와 현재 위치를 둘 다 지킨다
@@ -29,16 +29,16 @@
 #include <LittleFS.h>
 
 #ifndef STORE_MAX
-#define STORE_MAX          1200   // 약 1,200건 × 56바이트 ≈ 67KB. 60분 간격이면 약 50일
+#define STORE_MAX          1200   // 약 1,200건 × 68바이트 ≈ 82KB. 60분 간격이면 약 50일
 #endif
 #define KEEP_HEAD            48   // 처음 들어간 경로(60분 간격이면 이틀치)
 #define KEEP_TAIL           240   // 최근 위치(60분 간격이면 열흘치)
 #define STRAND_KEEP_EVERY     6   // 가운데 좌초 기록은 6개 중 1개
 #define COMPACT_AT          256   // 보낸 앞부분이 이만큼 쌓이면 파일을 정리한다
 
-static const char* STORE_FILE = "/ffq_v1.bin";
-static const char* STORE_HEAD = "/ffq_v1.hd";
-static const char* STORE_TMP  = "/ffq_v1.tmp";
+static const char* STORE_FILE = "/ffq_v2.bin";
+static const char* STORE_HEAD = "/ffq_v2.hd";
+static const char* STORE_TMP  = "/ffq_v2.tmp";
 
 static bool g_store_ok = false;
 

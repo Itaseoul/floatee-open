@@ -106,6 +106,18 @@ const uint32_t BATCH_MAX = 20;
 // GPS 기록은 매 웨이크 그대로 쌓는다. 접속이 한 번 되면 처음으로 돌아간다.
 const uint32_t NET_BACKOFF_START_MINUTES = 60;
 const uint32_t STRANDED_TRY_MINUTES = 360;   // 백오프 최대치
+// ── 벤치 전류 측정(INA219, 2026-09-27) ──
+// 1 = INA219 를 셀 (+)선 중간에 끼웠을 때. 웨이크 한 번에 쓴 전기(mAh)·걸린 시간·최대 전류를
+//     재어 다음 보고에 싣는다(wake_mah_prev·wake_s_prev·i_peak_ma_prev).
+// ★방류 기기에서는 0. 측정 저항(0.1Ω) 때문에 LTE 2A 순간에 0.2V 가 떨어져 모뎀 꺼짐 경계에 닿는다.
+// ★잘 때 전류는 칩이 자는 동안이라 이 방법으로 못 잰다. 멀티미터 mA 단으로 따로 잰다.
+// ★최대 전류는 20ms 마다 읽은 값 중 최댓값이라 1ms 보다 짧은 송신 순간은 놓칠 수 있다.
+#define USE_INA219 0
+#define INA_SDA   32         // ★보드 실크에서 빈 핀인지 확인하고 바꾼다(IO21·22 는 GPS)
+#define INA_SCL   33
+#define INA_ADDR  0x40
+const float INA_SHUNT_OHM = 0.1f;
+
 // 성능 최적화(2026-09-27)
 const uint32_t CPU_MHZ = 80;                 // 240→80MHz. GPS 대기 동안 칩 소모를 줄인다(Wi-Fi·모뎀 UART 는 80MHz 에서 동작)
 const uint32_t GPS_SHORT_TIMEOUT_MS = 60000; // GPS 가 연속 실패하면(숲 그늘 등) 이만큼만 기다린다
@@ -215,6 +227,9 @@ struct PingRec {
   char     ts_fix[24];  // GPS UTC ISO8601. 빈 문자열 = 시각 무효
   uint8_t  flags;       // F_* 비트
   uint16_t interval_m;  // 이 레코드 다음 잠 시간(분)
+  float    wake_mah_prev;   // 직전 웨이크에 쓴 전기(mAh). <0 = 측정 안 함(USE_INA219 0)
+  float    wake_s_prev;     // 직전 웨이크 시간(초)
+  float    i_peak_ma_prev;  // 직전 웨이크 최대 전류(mA, 20ms 표본)
 };
 #include "ffid_store.h"
 RTC_DATA_ATTR uint32_t rtc_seq   = 0;   // 단조증가 레코드 카운터(딥슬립 생존)
@@ -236,6 +251,48 @@ double distM(double la1, double lo1, double la2, double lo2) {
   double dla = (la2 - la1) * d2r, dlo = (lo2 - lo1) * d2r;
   double a = sin(dla/2)*sin(dla/2) + cos(la1*d2r)*cos(la2*d2r)*sin(dlo/2)*sin(dlo/2);
   return 2 * R * atan2(sqrt(a), sqrt(1 - a));
+}
+
+// ── INA219 웨이크 에너지 측정(벤치 전용) ──
+RTC_DATA_ATTR float rtc_prev_wake_mah = -1, rtc_prev_wake_s = -1, rtc_prev_i_peak = -1;
+#if USE_INA219
+#include <Wire.h>
+volatile float g_wake_mah = 0, g_i_peak = 0;
+volatile bool  g_ina_ok = false;
+// 분로 전압 레지스터(0x01, LSB 10uV) → mA. 기본 설정(±320mV)이라 0.1Ω 에서 ±3.2A 까지 잰다.
+bool inaReadMa(float &ma) {
+  Wire.beginTransmission(INA_ADDR); Wire.write(0x01);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(INA_ADDR, 2) != 2) return false;
+  int16_t raw = (Wire.read() << 8) | Wire.read();
+  ma = (raw * 10.0f) / 1000.0f / INA_SHUNT_OHM;   // uV → mV → mA
+  return true;
+}
+void inaTask(void*) {
+  uint32_t last = millis();
+  for (;;) {
+    float ma;
+    uint32_t now = millis();
+    if (inaReadMa(ma)) {
+      g_ina_ok = true;
+      g_wake_mah += ma * (now - last) / 3600000.0f;
+      if (ma > g_i_peak) g_i_peak = ma;
+    }
+    last = now;
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+}
+void inaStart() {
+  Wire.begin(INA_SDA, INA_SCL);
+  xTaskCreate(inaTask, "ina", 2048, nullptr, 1, nullptr);
+}
+#endif
+void inaFinishWake() {   // 딥슬립 직전에 부른다
+#if USE_INA219
+  rtc_prev_wake_mah = g_ina_ok ? g_wake_mah : -1;
+  rtc_prev_wake_s   = millis() / 1000.0f;
+  rtc_prev_i_peak   = g_ina_ok ? g_i_peak : -1;
+#endif
 }
 
 // 저전압 기록은 NVS에 둔다: 보호회로가 전원을 끊으면 RTC 메모리가 사라지기 때문
@@ -275,6 +332,11 @@ String buildPingBody(const PingRec &r) {
   b += ",\"flags\":" + String(r.flags);   // F_* 비트. 서버는 0 이면 평상으로 읽는다
   if (r.hdop >= 0) b += ",\"fix_quality\":" + String(r.hdop, 1);
   b += ",\"gnss_source\":\"l76k\"";
+  if (r.wake_mah_prev >= 0) {
+    b += ",\"wake_mah_prev\":" + String(r.wake_mah_prev, 3);
+    b += ",\"wake_s_prev\":" + String(r.wake_s_prev, 1);
+    b += ",\"i_peak_ma_prev\":" + String(r.i_peak_ma_prev, 0);
+  }
   if (r.ts_fix[0]) { b += ",\"ts_fix\":\"" + String(r.ts_fix) + "\",\"ts\":\"" + String(r.ts_fix) + "\""; }
   b += "}";
   return b;
@@ -454,6 +516,7 @@ void deepSleepFor(uint32_t minutes) {
   pinMode(BOARD_POWERON, OUTPUT);        digitalWrite(BOARD_POWERON, LOW);
   gpio_hold_en((gpio_num_t)BOARD_POWERON);
   gpio_deep_sleep_hold_en();
+  inaFinishWake();
   rtc_last_sleep_m = minutes;
   esp_sleep_enable_timer_wakeup((uint64_t)minutes * 60ULL * 1000000ULL);
   esp_deep_sleep_start();
@@ -470,6 +533,9 @@ void setup() {
   gpio_hold_dis((gpio_num_t)MODEM_RST);
   gpio_hold_dis((gpio_num_t)BOARD_POWERON);
   setCpuFrequencyMhz(CPU_MHZ);
+#if USE_INA219
+  inaStart();
+#endif
   Serial.begin(115200);
   analogReadResolution(12);
   storeBegin();
@@ -504,6 +570,9 @@ void setup() {
     r.batt = readBatteryV();
     r.hdop = gps.hdop.isValid() ? (float)gps.hdop.hdop() : -1.0f;
     r.seq  = nextSeq();
+    r.wake_mah_prev  = rtc_prev_wake_mah;
+    r.wake_s_prev    = rtc_prev_wake_s;
+    r.i_peak_ma_prev = rtc_prev_i_peak;
     gpsIso8601(r.ts_fix, sizeof(r.ts_fix));
 
     // ── 회수 판정 ──
