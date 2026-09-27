@@ -4,9 +4,12 @@
  * FF-ID 스키마 v1.1 (data/schema.md) 준수.
  *
  * 동작(v1.1, store-and-forward):
- *   깨어남 → L76K GPS fix(+UTC 시각) → 레코드를 RTC 버퍼에 적재(seq 부여)
+ *   깨어남 → L76K GPS fix(+UTC 시각) → 레코드를 플래시 저장소에 적재(seq 부여, ffid_store.h)
  *         → 모뎀 전원 → 망 접속(Cat.1 bis) → 버퍼의 미전송 레코드를 오래된 것부터 POST
  *         → 성공분 제거 → 딥슬립.
+ *   ★v1.2(2026-09-27): 저장소를 RTC 메모리 16건에서 플래시(LittleFS) 약 1,200건으로 옮겼다.
+ *     전원이 끊겨도 남고, 넘치면 처음 경로와 최근 위치를 지키고 가운데를 솎는다.
+ *     음영 구간에서 쌓인 것은 여러 건을 한 번에(JSON 배열) 보낸다. 벤치 확인 전.
  *   ★망이 안 잡혀도 fix는 버퍼에 남는다(하천 음영 구간). 다음 웨이크에 몰아 보낸다.
  *   ★도착 순서를 서버가 신뢰하지 않도록 각 레코드는 자기 ts_fix(GPS UTC)와 seq를 갖고 간다.
  *   ★저전압(배터리 방전)엔 모뎀 2A 피크를 피한다: fix만 버퍼에 남기고 전송을 미룬다(하단 저전압 가드).
@@ -89,6 +92,16 @@ const char* WIFI_PASS = "";
 
 const uint32_t SLEEP_MINUTES      = 30;        // 전송 주기(분). 벤치 확인은 5로 낮춰서
 const uint32_t GPS_FIX_TIMEOUT_MS = 180000;    // L76K 콜드스타트 여유(야외 30초~수 분)
+
+// ── 몰아 보내기(2026-09-27) ──
+// 1 = 쌓인 기록을 JSON 배열로 BATCH_MAX 건씩 한 번에 POST(모뎀 켜진 시간을 줄인다).
+//     번들 server/ingest_server.py 는 배열을 받는다. ★운영 서버(floatee /api/drift/ping)가
+//     배열을 받는지 확인되기 전에는 운영(BENCH_HTTP 0)에서 0 으로 둔다.
+#define BATCH_POST BENCH_HTTP
+const uint32_t BATCH_MAX = 20;
+// 좌초 의심 중이고 직전 접속이 실패했으면 모뎀 시도를 이 간격으로 줄인다(수신 없는 자리에서
+// 망 찾기로 배터리를 쓰지 않게). GPS 기록은 매 웨이크 그대로 쌓는다.
+const uint32_t STRANDED_TRY_MINUTES = 360;
 
 // ── 저전압 가드(재QA: LTE 송신 2A 피크가 방전 셀에서 브라운아웃을 일으켜 버퍼·seq를 날린다) ──
 // 임계값은 벤치 실측(T3 냉수·부하시험)으로 확정한다. 아래는 18650 방전곡선 기준 보수적 초깃값.
@@ -180,10 +193,9 @@ TinyGPSPlus    gps;
 Preferences    prefs;
 bool           modem_on = false;   // SerialAT.begin 전 modem.poweroff() 방지 가드
 
-// ── FF-ID v1.1 store-and-forward 버퍼 (RTC slow memory: 딥슬립 생존, 전원상실 시 소실) ──
-// 전원상실(브라운아웃·배터리 교체)엔 버퍼가 사라진다 — seq는 NVS로 복원되므로 서버가
-// seq 갭으로 결측을 안다(스키마 §4). NVS에 매 레코드 저장은 마모·복잡도 대비 이득이 작아
-// 채택하지 않는다(정직 트레이드오프). ★저전압 가드가 송신 브라운아웃을 선제 차단해 이 소실을 줄인다.
+// ── FF-ID v1.1 store-and-forward 레코드 ──
+// v1.2 부터 기록은 플래시 저장소(ffid_store.h)에 쌓는다. 전원이 끊겨도 남는다.
+// ★구조체 배치가 곧 파일 형식이다. 필드를 바꾸면 ffid_store.h 의 파일 이름(v1)을 올린다.
 struct PingRec {
   double   lat, lon;
   float    batt;
@@ -193,15 +205,16 @@ struct PingRec {
   uint8_t  flags;       // F_* 비트
   uint16_t interval_m;  // 이 레코드 다음 잠 시간(분)
 };
-#define BUF_MAX 16
-RTC_DATA_ATTR PingRec  rtc_buf[BUF_MAX];
-RTC_DATA_ATTR uint8_t  rtc_buf_n = 0;
+#include "ffid_store.h"
 RTC_DATA_ATTR uint32_t rtc_seq   = 0;   // 단조증가 레코드 카운터(딥슬립 생존)
 // 좌초 판정용 기준점(딥슬립 생존). 기준점에서 STRAND_RADIUS_M 안에 머문 누적 분.
 RTC_DATA_ATTR double   rtc_anchor_lat = 0, rtc_anchor_lon = 0;
 RTC_DATA_ATTR uint32_t rtc_anchor_min = 0;
 RTC_DATA_ATTR bool     rtc_anchor_ok  = false;
 RTC_DATA_ATTR uint32_t rtc_last_sleep_m = 0;   // 직전 잠 시간(누적 계산용)
+RTC_DATA_ATTR uint32_t rtc_min_since_try = 0;  // 마지막 모뎀 시도 뒤 흐른 분
+RTC_DATA_ATTR bool     rtc_last_net_fail = false;
+RTC_DATA_ATTR bool     rtc_last_stranded = false;
 
 // 두 좌표 거리(m), 하버사인
 double distM(double la1, double lo1, double la2, double lo2) {
@@ -367,40 +380,43 @@ void gpsIso8601(char* buf, size_t n) {
   }
 }
 
-// 버퍼 적재. 가득 차면 가장 오래된 것을 버리고 최신을 지킨다(현재 위치 우선, 스키마 §4가
-// seq 갭으로 결측을 안다). GDP식 운명 기록은 서버·정산 로그가 담당.
-void bufPush(const PingRec &r) {
-  if (rtc_buf_n >= BUF_MAX) {
-    memmove(&rtc_buf[0], &rtc_buf[1], sizeof(PingRec) * (BUF_MAX - 1));
-    rtc_buf_n = BUF_MAX - 1;
-  }
-  rtc_buf[rtc_buf_n++] = r;
+// POST 한 번. 2xx 면 true.
+bool postBody(const String &body) {
+  http.beginRequest();
+  http.post(SERVER_PATH);
+  http.sendHeader("Content-Type", "application/json");
+  http.sendHeader("Content-Length", body.length());
+  http.beginBody();
+  http.print(body);
+  http.endRequest();
+  int status = http.responseStatusCode();
+  if (status > 0) http.responseBody();   // 유효 응답만 소진(오류코드면 재차 30초 대기 회피)
+  Serial.print("[FF] 서버 응답 "); Serial.println(status);
+  if (status >= 200 && status < 300) return true;
+  http.stop();
+  return false;
 }
 
-// 버퍼 앞에서부터(오래된 순) POST. 2xx면 제거, 실패하면 중단(남은 건 다음 웨이크에).
-// 반환: 보낸 개수.
-int flushBuffer() {
+// 저장소 앞에서부터(오래된 순) 보낸다. 성공한 만큼 저장소에서 지우고, 실패하면 멈춘다
+// (남은 건 다음 웨이크에). BATCH_POST 면 BATCH_MAX 건씩 JSON 배열로 보낸다. 반환: 보낸 개수.
+int flushStore() {
   int sent = 0;
-  while (rtc_buf_n > 0) {
-    String body = buildPingBody(rtc_buf[0]);
-    Serial.println("[FF] POST " + body);
-    http.beginRequest();
-    http.post(SERVER_PATH);
-    http.sendHeader("Content-Type", "application/json");
-    http.sendHeader("Content-Length", body.length());
-    http.beginBody();
-    http.print(body);
-    http.endRequest();
-    int status = http.responseStatusCode();
-    if (status > 0) http.responseBody();   // 유효 응답만 소진(오류코드면 재차 30초 대기 회피)
-    Serial.print("[FF] 서버 응답 "); Serial.println(status);
-    if (status >= 200 && status < 300) {
-      memmove(&rtc_buf[0], &rtc_buf[1], sizeof(PingRec) * (rtc_buf_n - 1));
-      rtc_buf_n--; sent++;
-    } else {
-      http.stop();
-      break;               // 실패: 배터리 아끼고 다음 주기에 재시도
+  while (storeCount() > 0) {
+    uint32_t k = BATCH_POST ? min((uint32_t)storeCount(), BATCH_MAX) : 1;
+    String body = BATCH_POST ? "[" : "";
+    PingRec r;
+    uint32_t got = 0;
+    for (; got < k; got++) {
+      if (!storeRead(got, r)) break;
+      if (BATCH_POST && got) body += ",";
+      body += buildPingBody(r);
     }
+    if (got == 0) break;
+    if (BATCH_POST) body += "]";
+    Serial.printf("[FF] POST %lu건 (%u바이트)\n", (unsigned long)got, body.length());
+    if (!postBody(body)) break;    // 실패: 배터리 아끼고 다음 주기에 재시도
+    storeDropFront(got);
+    sent += got;
   }
   return sent;
 }
@@ -440,6 +456,7 @@ void setup() {
   gpio_hold_dis((gpio_num_t)BOARD_POWERON);
   Serial.begin(115200);
   analogReadResolution(12);
+  storeBegin();
   // 리셋 사유 로깅(재QA #5): 브라운아웃(ESP_RST_BROWNOUT=6)이 반복되면 저전압 가드·전원설계 재검토 신호
   Serial.printf("[FF] reset_reason=%d (3=SW 4=panic 6=BROWNOUT 8=deepsleep)\n", (int)esp_reset_reason());
 
@@ -452,6 +469,8 @@ void setup() {
     deepSleepFor(parkM);
   }
   g_next_sleep_m = chooseIntervalM(vbat0, false);
+
+  rtc_min_since_try += rtc_last_sleep_m;
 
   // ① GPS fix 먼저(망 없어도 관측은 남긴다 — store-and-forward의 요점)
   double lat = 0, lon = 0;
@@ -485,15 +504,16 @@ void setup() {
     g_next_sleep_m = chooseIntervalM(r.batt, outZone);
     r.interval_m = (uint16_t)g_next_sleep_m;
 
-    bufPush(r);
+    storePush(r);
+    rtc_last_stranded = (f & F_STRANDED);
     Serial.printf("[FF] fix seq=%lu lat=%.6f lon=%.6f hdop=%.1f sats=%lu batt=%.2fV flags=0x%02X next=%lum buf=%u\n",
                   (unsigned long)r.seq, lat, lon, r.hdop, gps.satellites.value(), r.batt, f,
-                  (unsigned long)g_next_sleep_m, rtc_buf_n);
+                  (unsigned long)g_next_sleep_m, (unsigned)storeCount());
   } else {
     Serial.println("[FF] GPS fix 실패(실내면 창가/야외로). 버퍼 있으면 전송만 시도");
   }
 
-  if (rtc_buf_n == 0) {         // 보낼 것도 없음 → 바로 슬립
+  if (storeCount() == 0) {         // 보낼 것도 없음 → 바로 슬립
     Serial.println("[FF] 전송할 레코드 없음 → 슬립");
     deepSleep();
   }
@@ -503,12 +523,20 @@ void setup() {
   float vbat = readBatteryV();
   if (vbat > 1.0f && vbat < BATT_SKIP_TX_V) {
     Serial.printf("[FF] 저전압 %.2fV<%.2fV → 전송 보류(버퍼 %u건 보존), 슬립\n",
-                  vbat, BATT_SKIP_TX_V, rtc_buf_n);
+                  vbat, BATT_SKIP_TX_V, (unsigned)storeCount());
     deepSleep();
   }
 
   // ② 망 접속 → 버퍼 플러시
-  if (!netConnect()) deepSleep();
+  // 좌초 의심 + 직전 접속 실패면 모뎀 시도를 STRANDED_TRY_MINUTES 에 한 번으로 줄인다
+  if (rtc_last_stranded && rtc_last_net_fail && rtc_min_since_try < STRANDED_TRY_MINUTES) {
+    Serial.printf("[FF] 좌초 의심·직전 접속 실패 → 모뎀 생략(%lu/%lu분), 저장 %u건\n",
+                  (unsigned long)rtc_min_since_try, (unsigned long)STRANDED_TRY_MINUTES, (unsigned)storeCount());
+    deepSleep();
+  }
+  rtc_min_since_try = 0;
+  if (!netConnect()) { rtc_last_net_fail = true; deepSleep(); }
+  rtc_last_net_fail = false;
 
   // ★★TLS-AUTH 훅(운영 HTTPS): 첫 connect 전에 CA를 심고 서버 인증서 검증을 켠다.
   //   아래는 하드웨어 검증 전이라 주석 처리 — README '보안·공급망' 절차대로 켜고 벤치에서
@@ -518,8 +546,8 @@ void setup() {
   //   // + AT+CSSLCFG "authmode"=서버검증, "sni"/"servername"=SERVER_HOST (포크 SSL 설정)
   // #endif
 
-  int sent = flushBuffer();
-  Serial.printf("[FF] 전송 %d건, 잔여 %u건\n", sent, rtc_buf_n);
+  int sent = flushStore();
+  Serial.printf("[FF] 전송 %d건, 잔여 %u건\n", sent, (unsigned)storeCount());
 
   netDisconnect();
   Serial.println("[FF] 완료 → 딥슬립");

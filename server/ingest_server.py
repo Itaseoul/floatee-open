@@ -279,6 +279,57 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _ingest_ping(self, body):
+        """레코드 1건 적재. (HTTP 코드, 응답 dict) 를 돌려준다."""
+        if not isinstance(body, dict):
+            return 400, {"error": "bad ping: not an object"}
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            ts_fix = body.get("ts_fix") or body.get("ts") or None  # v1.0 "ts" → ts_fix 매핑
+            rec = {"device_id": str(body["device_id"]),
+                   "lat": float(body["lat"]), "lon": float(body["lon"]),
+                   "ts": ts_fix or now_iso,                        # 정렬 폴백(구버전 호환 키)
+                   "server_recv_ts": now_iso,
+                   "ts_source": "device_fix" if ts_fix else "server_recv"}
+            if ts_fix:
+                rec["ts_fix"] = ts_fix
+            for k in ("site_id", "seq", "batt", "sample_interval_s",
+                      "fix_quality", "gnss_source", "motion_state"):
+                if body.get(k) is not None:
+                    rec[k] = body[k]
+            # 회수 플래그(schema §1 flags). 0 이면 평상. 범위 밖 값은 거부한다.
+            if body.get("flags") is not None:
+                fl = int(body["flags"])
+                if not 0 <= fl <= 0xFF:
+                    raise ValueError(f"flags out of range: {fl}")
+                rec["flags"] = fl
+            # ★서버 부여 신원 + 고정 컨텍스트(schema §1) — 그래야 하류 표준 export(CF/STA)가
+            #   유효해진다(@iot.id·provenance 누락으로 K1 게이트 자기탈락하던 문제 해소).
+            #   ★서버가 실제로 아는 것만 부여한다 — builder·qc는 날조하지 않는다.
+            rec.setdefault("schema_version", "1.1")
+            rec.setdefault("medium", "freshwater")   # 설계 고정값(담수). 기수 배포 시 body가 덮음
+            rec.setdefault("link", "cellular")
+            rec["obs_id"] = str(body["obs_id"]) if body.get("obs_id") else (
+                f"{rec['device_id']}#{rec['seq']}" if rec.get("seq") is not None
+                else f"{rec['device_id']}#{now_iso}")
+            # provenance: 인제스트가 아는 사실만(수신 시각·시각 출처). 빌드측 provenance
+            # (builder·bom_tier)는 body가 주면 병합, 없으면 서버가 지어내지 않는다.
+            rec["provenance"] = {"ingest": "seacut-ingest", "recv_ts": now_iso,
+                                 "ts_source": rec["ts_source"]}
+            if isinstance(body.get("provenance"), dict):
+                rec["provenance"].update(body["provenance"])
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return 400, {"error": f"bad ping: {e}"}
+        # 멱등성: 펌웨어 store-and-forward 재전송(2xx 유실 후 재시도) 시 (device_id, seq)
+        # 중복을 재적재하지 않는다. 파일 전체 스캔 = 벤치 규모 전제(운영은 DB로 이식).
+        if "seq" in rec:
+            for p in _read_pings():
+                if p.get("device_id") == rec["device_id"] and p.get("seq") == rec["seq"]:
+                    return 200, {"ok": True, "dup": True, "stored": p}
+        with open(PINGS, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return 200, {"ok": True, "stored": rec}
+
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
         n = int(self.headers.get("Content-Length", 0))
@@ -321,53 +372,24 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({"ok": True, "stored": {"email": rec["email"], "shares": rec["shares"]}}))
 
         if path == "/api/ping":
+            # 단건(객체) 또는 여러 건(배열). 배열은 펌웨어가 음영 구간에 쌓았다가 몰아 보낼 때 쓴다.
+            # ★배열이면 항목마다 따로 적재하고 결과를 모아 200 으로 답한다. 나쁜 항목 하나가
+            #   나머지를 막지 않게 하려는 것이다(펌웨어는 200 이면 보낸 묶음을 지운다).
             try:
                 body = json.loads(raw)
-                now_iso = datetime.now(timezone.utc).isoformat()
-                ts_fix = body.get("ts_fix") or body.get("ts") or None  # v1.0 "ts" → ts_fix 매핑
-                rec = {"device_id": str(body["device_id"]),
-                       "lat": float(body["lat"]), "lon": float(body["lon"]),
-                       "ts": ts_fix or now_iso,                        # 정렬 폴백(구버전 호환 키)
-                       "server_recv_ts": now_iso,
-                       "ts_source": "device_fix" if ts_fix else "server_recv"}
-                if ts_fix:
-                    rec["ts_fix"] = ts_fix
-                for k in ("site_id", "seq", "batt", "sample_interval_s",
-                          "fix_quality", "gnss_source", "motion_state"):
-                    if body.get(k) is not None:
-                        rec[k] = body[k]
-                # 회수 플래그(schema §1 flags). 0 이면 평상. 범위 밖 값은 거부한다.
-                if body.get("flags") is not None:
-                    fl = int(body["flags"])
-                    if not 0 <= fl <= 0xFF:
-                        raise ValueError(f"flags out of range: {fl}")
-                    rec["flags"] = fl
-                # ★서버 부여 신원 + 고정 컨텍스트(schema §1) — 그래야 하류 표준 export(CF/STA)가
-                #   유효해진다(@iot.id·provenance 누락으로 K1 게이트 자기탈락하던 문제 해소).
-                #   ★서버가 실제로 아는 것만 부여한다 — builder·qc는 날조하지 않는다.
-                rec.setdefault("schema_version", "1.1")
-                rec.setdefault("medium", "freshwater")   # 설계 고정값(담수). 기수 배포 시 body가 덮음
-                rec.setdefault("link", "cellular")
-                rec["obs_id"] = str(body["obs_id"]) if body.get("obs_id") else (
-                    f"{rec['device_id']}#{rec['seq']}" if rec.get("seq") is not None
-                    else f"{rec['device_id']}#{now_iso}")
-                # provenance: 인제스트가 아는 사실만(수신 시각·시각 출처). 빌드측 provenance
-                # (builder·bom_tier)는 body가 주면 병합, 없으면 서버가 지어내지 않는다.
-                rec["provenance"] = {"ingest": "seacut-ingest", "recv_ts": now_iso,
-                                     "ts_source": rec["ts_source"]}
-                if isinstance(body.get("provenance"), dict):
-                    rec["provenance"].update(body["provenance"])
-            except (KeyError, ValueError, json.JSONDecodeError) as e:
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 return self._send(400, json.dumps({"error": f"bad ping: {e}"}))
-            # 멱등성: 펌웨어 store-and-forward 재전송(2xx 유실 후 재시도) 시 (device_id, seq)
-            # 중복을 재적재하지 않는다. 파일 전체 스캔 = 벤치 규모 전제(운영은 DB로 이식).
-            if "seq" in rec:
-                for p in _read_pings():
-                    if p.get("device_id") == rec["device_id"] and p.get("seq") == rec["seq"]:
-                        return self._send(200, json.dumps({"ok": True, "dup": True, "stored": p}))
-            with open(PINGS, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            return self._send(200, json.dumps({"ok": True, "stored": rec}))
+            if isinstance(body, list):
+                if len(body) > 200:
+                    return self._send(413, json.dumps({"error": "too many records (max 200)"}))
+                results = [self._ingest_ping(item) for item in body]
+                ok = sum(1 for c, _ in results if c == 200)
+                return self._send(200, json.dumps({"ok": True, "accepted": ok,
+                                                   "rejected": len(results) - ok,
+                                                   "results": [r for _, r in results]},
+                                                  ensure_ascii=False))
+            code, payload = self._ingest_ping(body)
+            return self._send(code, json.dumps(payload, ensure_ascii=False))
 
         self._send(404, json.dumps({"error": "not found"}))
 
