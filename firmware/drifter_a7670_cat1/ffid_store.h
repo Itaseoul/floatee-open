@@ -101,10 +101,12 @@ static bool storeRewrite(KeepFn keep) {
     if (keep(k - head, n - head, r)) out.write((const uint8_t*)&r, sizeof(r));
   }
   in.close(); out.close();
-  LittleFS.remove(STORE_FILE);
-  bool ok = LittleFS.rename(STORE_TMP, STORE_FILE);
+  // ★순서가 중요하다. head 를 먼저 0 으로 두면, 여기서 전원이 끊겨도 원본이 남아 있고
+  //   보낸 것을 다시 보낼 뿐이다(서버가 seq 로 중복을 거른다). 원본 삭제와 이름 바꾸기
+  //   사이에 끊기면 storeBegin 이 임시 파일을 원본으로 되살린다.
   storeSetHead(0);
-  return ok;
+  LittleFS.remove(STORE_FILE);
+  return LittleFS.rename(STORE_TMP, STORE_FILE);
 }
 
 // 보낸 앞부분을 파일에서 실제로 걷어낸다
@@ -139,6 +141,15 @@ static void storeThin() {
 bool storeBegin() {
   g_store_ok = LittleFS.begin(true);   // 첫 부팅이면 포맷
   if (!g_store_ok) { Serial.println("[FF] LittleFS 마운트 실패 — 이번 웨이크는 저장 없이 진행"); return false; }
+  // 정리 도중 전원이 끊긴 흔적 복구
+  bool hasMain = LittleFS.exists(STORE_FILE), hasTmp = LittleFS.exists(STORE_TMP);
+  if (!hasMain && hasTmp) {            // 원본 삭제 뒤, 이름 바꾸기 전에 끊김 → 임시 파일이 완성본
+    LittleFS.rename(STORE_TMP, STORE_FILE);
+    storeSetHead(0);
+    Serial.println("[FF] 저장소 복구: 임시 파일을 원본으로");
+  } else if (hasTmp) {                 // 임시 파일을 쓰던 중에 끊김 → 원본이 온전하니 임시 파일을 버린다
+    LittleFS.remove(STORE_TMP);
+  }
   File f = LittleFS.open(STORE_FILE, "r");
   if (f) {
     size_t sz = f.size();

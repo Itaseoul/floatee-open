@@ -385,10 +385,20 @@ class H(BaseHTTPRequestHandler):
                     return self._send(413, json.dumps({"error": "too many records (max 200)"}))
                 results = [self._ingest_ping(item) for item in body]
                 ok = sum(1 for c, _ in results if c == 200)
+                # ★배열 응답은 짧게 준다(셀룰러 데이터와 모뎀 켜진 시간을 아낀다). 항목마다
+                #   seq·ok·dup·error 만 돌려준다. 저장된 레코드 전체는 단건 응답에서만 준다.
+                brief = []
+                for item, (c, r) in zip(body, results):
+                    seq = item.get("seq") if isinstance(item, dict) else None
+                    e = {"seq": seq, "ok": c == 200}
+                    if r.get("dup"):
+                        e["dup"] = True
+                    if r.get("error"):
+                        e["error"] = r["error"]
+                    brief.append(e)
                 return self._send(200, json.dumps({"ok": True, "accepted": ok,
                                                    "rejected": len(results) - ok,
-                                                   "results": [r for _, r in results]},
-                                                  ensure_ascii=False))
+                                                   "results": brief}, ensure_ascii=False))
             code, payload = self._ingest_ping(body)
             return self._send(code, json.dumps(payload, ensure_ascii=False))
 
