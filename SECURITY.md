@@ -1,7 +1,7 @@
 # Security, Data Integrity and Content Policy
 
 ## Reporting a vulnerability
-Please do not open a public issue for security problems. Email **CONTACT_EMAIL** with the details.
+Please do not open a public issue for security problems. Email **cto@itaseoul.org** with the details.
 We aim to acknowledge within 7 days.
 
 ## What the reference ingest server does and does not do
@@ -21,4 +21,4 @@ pictures or long text; the identifier strings are the only place a mistake could
 - **Personal data submitted by mistake** (for example a phone number in a device name): removed on
   report and within 7 days of discovery.
 - **Content in issues and pull requests** follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
-Report any of the above to **CONTACT_EMAIL**.
+Report any of the above to **cto@itaseoul.org**.

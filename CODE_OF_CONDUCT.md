@@ -10,7 +10,7 @@ for everyone who contributes code, hardware designs, documentation, data, or dis
 - Never publish anyone's personal data (see [PRIVACY.md](PRIVACY.md)).
 
 ## Reporting
-Report a concern by email to the maintainers (사단법인 이타서울): **CONTACT_EMAIL**.
+Report a concern by email to the maintainers (사단법인 이타서울): **cto@itaseoul.org**.
 Reports are read by the maintainers only and handled confidentially. We aim to reply within 7 days.
 
 ## Enforcement
