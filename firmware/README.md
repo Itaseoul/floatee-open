@@ -24,7 +24,9 @@ Reference firmware: [`drifter_a7670_cat1/drifter_a7670_cat1.ino`](drifter_a7670_
 
 ## Test paths and recovery mode (2026-09-26)
 
-- **Wi-Fi test mode** (`USE_WIFI 1`, added 2026-09-12): the ESP32 sends over Wi-Fi (phone hotspot or office AP, 2.4 GHz only) so you can prove GPS and server round-trip before a SIM arrives. Wi-Fi drops within tens of metres of the bank — **set `USE_WIFI 0` (LTE) before release.**
+- **Release vs bench build** (`RELEASE_BUILD`, v1.3, 2026-09-28): the default is now the **release build** (`RELEASE_BUILD 1` forces `USE_WIFI 0`, `BENCH_HTTP 0`, `USE_INA219 0` — LTE + HTTPS to the production server). Until v1.2 the defaults were Wi-Fi + bench, so a unit sealed without editing would never use LTE. For bench tests build with `RELEASE_BUILD=0` (commands under Toolchain) or change that one line in the IDE.
+- **Wi-Fi test mode** (bench build, `USE_WIFI 1`, added 2026-09-12): the ESP32 sends over Wi-Fi (phone hotspot or office AP, 2.4 GHz only) so you can prove GPS and server round-trip before a SIM arrives. Wi-Fi drops within tens of metres of the bank — **release units use the release build (LTE).**
+- **v1.3 changes** (expert review 2026-09-28; compiled only, not yet run on a board): see [`drifter_a7670_cat1/CHANGELOG`](drifter_a7670_cat1/CHANGELOG).
 - **Voltage-adaptive interval** (`ADAPTIVE_INTERVAL`): ≥3.90 V 60 min · ≥3.70 V 120 min · ≥3.50 V 360 min · below 720 min. Out of the recovery zone with ≥3.90 V: 30 min.
 - **Recovery zone**: set `ZONE_LAT`, `ZONE_LON`, `ZONE_RADIUS_M` per release site (radius 0 disables).
 - **Low-battery memory in NVS**: the protection circuit may cut power and wipe RTC memory, so the "was low" mark survives in NVS to produce the `revived` flag.
@@ -33,7 +35,11 @@ Reference firmware: [`drifter_a7670_cat1/drifter_a7670_cat1.ino`](drifter_a7670_
 ## Toolchain
 
 - Arduino IDE, ESP32 Arduino core 3.0.x, board "ESP32 Dev Module"
-- Command line (verified 2026-09-26, core 3.0.7, arduino-cli 1.3.1): `arduino-cli compile -b esp32:esp32:esp32 firmware/drifter_a7670_cat1`. Flash use: Wi-Fi mode 949,785 bytes (72%), LTE bench 335,389 (25%), LTE HTTPS 338,797 (25%).
+- Command line (core 3.0.7, arduino-cli 1.3.1):
+  - Release build (default): `arduino-cli compile -b esp32:esp32:esp32 firmware/drifter_a7670_cat1`
+  - Bench build, Wi-Fi + local plain HTTP: `arduino-cli compile -b esp32:esp32:esp32 --build-property "build.defines=-DRELEASE_BUILD=0" firmware/drifter_a7670_cat1`
+  - Bench build, LTE + plain HTTP (ngrok tcp): `arduino-cli compile -b esp32:esp32:esp32 --build-property "build.defines=-DRELEASE_BUILD=0 -DUSE_WIFI=0" firmware/drifter_a7670_cat1`
+  - Flash use v1.3 (2026-09-28): see the CHANGELOG. v1.2 (2026-09-26): Wi-Fi mode 949,785 bytes (72%), LTE bench 335,389 (25%), LTE HTTPS 338,797 (25%).
 - Libraries: **lewisxhe/TinyGSM-fork** (required; stock TinyGSM lacks the A7670 macro — uninstall stock), TinyGPSPlus, ArduinoHttpClient. `Preferences` ships with the core.
 
 ## Configure

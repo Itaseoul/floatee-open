@@ -12,11 +12,15 @@ SEA:CUT — ita.city 수신 파이프라인 (3단계, stdlib 전용)
                              필수: device_id, lat, lon
                              v1.1: seq, ts_fix, sample_interval_s, fix_quality, gnss_source,
                                    batt, site_id, motion_state, flags (v1.0 "ts"는 ts_fix로 매핑)
+                             펌웨어 v1.3: fw_version, sats, gnss_fix_s, solar_v, net_stage_prev,
+                                   rsrp_prev, rsrq_prev, rssi_prev, cell_id_prev, reg_s_prev,
+                                   vmin_tx_prev, reset_reason, brownouts, iccid
+                             ★모르는 스칼라 칸은 버리지 않고 "extra" 에 모은다
                              ★(device_id, seq) 중복 재전송은 멱등 처리(재적재 안 함 — 펌웨어
                                store-and-forward 재시도 대비)
   GET  /api/live.geojson     실측 드리프터 궤적(단말별 LineString, ts_fix→seq 순 정렬)
   GET  /api/predicted.geojson 예측 결과: 최종위치 점군 + 앙상블 평균 경로
-  GET  /api/recovery.json    회수 목록: 마지막 레코드의 flags 가 0 이 아닌 단말
+  GET  /api/recovery.json    회수 목록: 마지막 레코드의 flags 가 0 이 아니거나 ICCID 가 바뀐 단말
   GET  /                     Leaflet 지도(실측 + 예측 오버레이, 자동 새로고침)
 
 데이터
@@ -86,12 +90,33 @@ def live_geojson():
 
 # 펌웨어 F_* 비트와 같은 값(firmware/drifter_a7670_cat1 의 F_RECOVER 등).
 FLAG_NAMES = [(0x01, "recover"), (0x02, "out_of_zone"), (0x04, "stranded"),
-              (0x08, "last_report"), (0x10, "revived")]
+              (0x08, "last_report"), (0x10, "revived"),
+              (0x20, "weir_dwell"), (0x40, "geofence"), (0x80, "unexpected_reset")]  # 뒤 셋은 펌웨어 v1.3
+
+# 펌웨어 v1.3 이 보내는 칸(schema §1). 받으면 그대로 저장한다.
+V13_FIELDS = ("fw_version", "sats", "gnss_fix_s", "solar_v", "net_stage_prev",
+              "rsrp_prev", "rsrq_prev", "rssi_prev", "cell_id_prev", "reg_s_prev",
+              "vmin_tx_prev", "reset_reason", "brownouts", "iccid")
+# 서버가 따로 다루거나 스스로 부여하는 칸. 이 밖의 칸은 버리지 않고 "extra" 에 모은다
+# (펌웨어가 앞서 새 칸을 보내도 조용히 사라지지 않게).
+KNOWN_FIELDS = {"device_id", "lat", "lon", "ts", "ts_fix", "site_id", "seq", "batt",
+                "sample_interval_s", "fix_quality", "gnss_source", "motion_state",
+                "wake_mah_prev", "wake_s_prev", "i_peak_ma_prev", "flags",
+                "obs_id", "provenance", "server_recv_ts", "ts_source", *V13_FIELDS}
+
+
+def _sim_suspect(pts):
+    """유심 도난 의심(검수 04 문서 5장): 같은 단말에서 ICCID 가 바뀌었으면 사유를 돌려준다.
+    ★「마지막 보고 뒤 24시간 무응답 + 산책로·해변 10 m 안」 판정은 지형 자료가 필요해 아직 없다."""
+    seen = [p.get("iccid") for p in pts if p.get("iccid")]
+    if len(set(seen)) > 1:
+        return "iccid_changed"
+    return None
 
 
 def recovery_report():
-    """회수 목록. 단말마다 마지막 레코드(ts_fix→seq 순)를 보고, 그 flags 가 0 이 아니면
-    목록에 올린다. flags 를 보내지 않는 구버전 단말은 평상으로 읽는다(목록에 안 올린다)."""
+    """회수 목록. 단말마다 마지막 레코드(ts_fix→seq 순)를 보고, 그 flags 가 0 이 아니거나
+    ICCID 가 바뀌었으면 목록에 올린다. flags 를 보내지 않는 구버전 단말은 평상으로 읽는다."""
     by_dev = {}
     for p in _read_pings():
         by_dev.setdefault(p["device_id"], []).append(p)
@@ -101,14 +126,19 @@ def recovery_report():
         pts.sort(key=lambda r: ((r.get("ts_fix") or r.get("ts") or ""), r.get("seq") or 0))
         last = pts[-1]
         fl = int(last.get("flags") or 0)
-        if not fl:
+        sim = _sim_suspect(pts)
+        if not fl and not sim:
             continue
+        reasons = [n for b, n in FLAG_NAMES if fl & b]
+        if sim:
+            reasons.append(sim)
         seen = _parse_ts(last.get("server_recv_ts") or last.get("ts"))
         items.append({"device_id": dev, "site_id": last.get("site_id"),
-                      "flags": fl, "reasons": [n for b, n in FLAG_NAMES if fl & b],
+                      "flags": fl, "reasons": reasons,
                       "lat": last["lat"], "lon": last["lon"],
                       "ts_fix": last.get("ts_fix"), "seq": last.get("seq"),
-                      "batt": last.get("batt"),
+                      "batt": last.get("batt"), "iccid": last.get("iccid"),
+                      "rsrp_prev": last.get("rsrp_prev"), "net_stage_prev": last.get("net_stage_prev"),
                       "hours_since_recv": round((now - seen).total_seconds() / 3600, 1) if seen else None})
     # 회수 요청·마지막 보고를 앞에, 그다음 오래 조용한 순
     items.sort(key=lambda r: (-int(bool(r["flags"] & 0x09)), -(r["hours_since_recv"] or 0)))
@@ -295,9 +325,17 @@ class H(BaseHTTPRequestHandler):
                 rec["ts_fix"] = ts_fix
             for k in ("site_id", "seq", "batt", "sample_interval_s",
                       "fix_quality", "gnss_source", "motion_state",
-                      "wake_mah_prev", "wake_s_prev", "i_peak_ma_prev"):
+                      "wake_mah_prev", "wake_s_prev", "i_peak_ma_prev", *V13_FIELDS):
                 if body.get(k) is not None:
                     rec[k] = body[k]
+            if "iccid" in rec:
+                rec["iccid"] = str(rec["iccid"])[:24]
+            # 모르는 칸도 버리지 않는다(스칼라만, 60자 제한). 펌웨어가 서버보다 앞서 새 칸을 보낼 때 대비.
+            extra = {k: v for k, v in body.items()
+                     if k not in KNOWN_FIELDS and isinstance(v, (int, float, str, bool))
+                     and len(str(k)) <= 40}
+            if extra:
+                rec["extra"] = {k: (v[:60] if isinstance(v, str) else v) for k, v in extra.items()}
             # 회수 플래그(schema §1 flags). 0 이면 평상. 범위 밖 값은 거부한다.
             if body.get("flags") is not None:
                 fl = int(body["flags"])

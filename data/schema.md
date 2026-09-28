@@ -31,7 +31,23 @@
 | **fix_quality** | number | no | HDOP(없으면 sat_count). 없으면 down-weight |
 | **gnss_source** | string | no | `l76k` / `phone` / `other` |
 | motion_state | string | no | 디바이스 힌트 `afloat`/`stranded`/`unknown`(서버도 추론) |
-| flags | integer | no | 회수 비트(0~255). `0x01` 회수 요청 · `0x02` 구역 이탈 · `0x04` 좌초 의심 · `0x08` 마지막 보고 · `0x10` 되살아남. 없거나 0 이면 평상. 번들 서버는 `GET /api/recovery.json` 으로 마지막 레코드가 0 이 아닌 단말을 모은다 |
+| flags | integer | no | 회수 비트(0~255). `0x01` 회수 요청 · `0x02` 구역 이탈 · `0x04` 좌초 의심 · `0x08` 마지막 보고 · `0x10` 되살아남 · `0x20` 보 체류 의심 · `0x40` 지오펜스 안 · `0x80` 예기치 않은 리셋 뒤 첫 보고(뒤 셋은 펌웨어 v1.3). 없거나 0 이면 평상. 번들 서버는 `GET /api/recovery.json` 으로 마지막 레코드가 0 이 아니거나 ICCID 가 바뀐 단말을 모은다 |
+| fw_version | string | no | 펌웨어 판(예: `1.3`) |
+| sats | integer | no | 고정에 쓴 위성 수(GGA) |
+| gnss_fix_s | integer | no | 이번 GNSS 고정까지 걸린 초. 냉시동·온시동과 하늘 가림을 가르는 근거 |
+| solar_v | number | no | 태양광 패널 전압(V). ★보드 ADC 핀(IO36/IO34)과 분압 배수는 벤치 확인 전이라 절대값보다 추세로 읽는다 |
+| net_stage_prev | integer | no | **직전** 망 접속이 어디까지 갔나. 1 모뎀 무응답 · 2 유심 없음·오류 · 3 PIN 잠김·실패 · 4 망 등록 실패 · 5 PDP 실패 · 6 접속 · 7 전송 성공 · 8 Wi-Fi 실패 · 9 접속했으나 전송 실패 |
+| rsrp_prev | integer | no | **직전** 접속의 RSRP(dBm, `AT+CPSI?`) |
+| rsrq_prev | integer | no | **직전** 접속의 RSRQ(`AT+CPSI?` 원시값. 단위는 모뎀 판에 따라 확인 필요) |
+| rssi_prev | integer | no | **직전** 접속의 RSSI(dBm, `AT+CPSI?` 또는 `AT+CSQ` 환산 −113+2×CSQ. Wi-Fi 벤치에서는 Wi-Fi RSSI) |
+| cell_id_prev | integer | no | **직전** 접속 셀 ID(`AT+CPSI?` SCellID) |
+| reg_s_prev | integer | no | **직전** 망 등록(또는 Wi-Fi 접속)에 걸린 초 |
+| vmin_tx_prev | number | no | **직전** 송신 중 가장 낮았던 배터리 전압(V, 20 ms 표본). 겨울 송신 강하 판정 |
+| reset_reason | integer | no | 이 기록을 만든 부팅의 리셋 사유(ESP-IDF `esp_reset_reason`). 8 딥슬립 웨이크(평상) · 1 전원 투입 · 6 브라운아웃 · 4 패닉 |
+| brownouts | integer | no | 기기의 브라운아웃 리셋 누적 횟수 |
+| iccid | string | no | **보낼 때** 꽂혀 있는 유심의 ICCID. 같은 단말에서 바뀌면 유심 도난 의심 |
+
+`_prev` 칸은 **직전 웨이크의 망 접속** 값이다. 기록이 GPS 직후, 모뎀을 켜기 전에 만들어지기 때문이다. 펌웨어 v1.3 칸은 값이 있을 때만 보낸다. 번들 서버는 이 표에 없는 스칼라 칸도 버리지 않고 `extra` 에 모은다.
 
 \* `ts_fix` 결측 핑은 거부하지 않고 §2 `ts_source=server_recv`로 **강등 수용**한다(`is_estimate` 상향; 버퍼 지연 전송 시 관측시각 신뢰 불가). 단 디바이스는 반드시 채워 보내는 것이 표준이다.
 
@@ -154,4 +170,5 @@ NOAA Global Drifter Program 관행을 채택하여 각 물리 유닛은 방류·
 
 - **1.0 → 1.1**: `ts`(모호) → `ts_fix`+`server_recv_ts`로 분리(1.0 `ts`는 `ts_fix`로 매핑). 신규 필수 `seq`·`sample_interval_s`; 신규 선택 `fix_quality`·`gnss_source`·`motion_state`·`qc`·`crs`. 유닛 메타데이터 디렉토리(§3)·QC(§4) 신설.
 - **1.1 추가(2026-09-26)**: 선택 필드 `flags`(회수 비트). 하위호환, 구버전 단말은 평상으로 읽는다.
+- **1.1 추가(2026-09-28, 펌웨어 v1.3)**: `flags` 비트 `0x20`·`0x40`·`0x80`, 선택 필드 `fw_version`·`sats`·`gnss_fix_s`·`solar_v`·`net_stage_prev`·`rsrp_prev`·`rsrq_prev`·`rssi_prev`·`cell_id_prev`·`reg_s_prev`·`vmin_tx_prev`·`reset_reason`·`brownouts`·`iccid`. 전부 선택이라 하위호환이다. 번들 서버는 모르는 스칼라 칸을 `extra` 에 보존한다.
 - 혼합 버전 집계 규칙: `schema_version` 별로 필드 매핑 후 합친다. 1.0 레코드는 `ts_source=device_fix` 가정하되 `sample_interval_s` 없으면 `raw`로 강등(가중 불가).
