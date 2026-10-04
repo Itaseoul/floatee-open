@@ -43,7 +43,7 @@
  *    1대 PoC는 국내 데이터 유심 또는 글로벌 IoT SIM으로 접속 테스트만 수행한다.
  */
 
-#define FW_VERSION "1.3"
+#define FW_VERSION "1.3.1"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -94,7 +94,8 @@
 //   USE_WIFI 0 · BENCH_HTTP 0 → 운영. 방류. (= RELEASE_BUILD 1)
 
 // ── CONFIG ────────────────────────────────────────────────────────────────
-#define DEVICE_ID     "ff-kr-bs-u0001"        // 기기 식별자(유닛 메타디렉토리 unit_id와 짝)
+// ★기기 ID 는 상수가 아니다(v1.3.1, 2026-10-04). 칩 고유번호로 만든다(floatee_identity.h, "ff-" + 12자리).
+//   예전 상수 "ff-kr-bs-u0001" 은 서버 등록부 형식(ff-[0-9a-f]{12})에 맞지 않아 계정에 등록할 수 없었다.
 #define SITE_ID       "nakdong-hakjang"       // 사이트 태그(서버가 궤적에 태그)
 const char* APN       = "";                   // 유심 사업자 APN. 꽂은 유심에 맞게 채운다.
                                               //  Soracom(권장 1대 PoC): "soracom.io"  (USER "sora" / PASS "sora"). 한국 KT/SKT 로밍.
@@ -302,6 +303,8 @@ const GeoBox FENCES[] = {
 #include <ArduinoHttpClient.h>
 #include <TinyGPSPlus.h>
 #include <Preferences.h>
+#include "floatee_identity.h"   // 기기 ID · 등록 코드 · 설치 화면 질의 응답(v1.3.1)
+floatee::Identity ident;
 #include <driver/gpio.h>
 
 // LILYGO T-A7670G R2 핀맵 (공식 utilities.h / ExternalGPS_A7670G_Only 기준)
@@ -598,7 +601,7 @@ uint32_t nextSeq() {
 // (스키마 1.0→1.1 매핑: ts → ts_fix). 서버 수신시각은 서버가 server_recv_ts로 따로 채운다.
 // v1.3 칸은 값이 있을 때만 넣는다(서버는 없는 칸을 「없음」으로 읽는다).
 String buildPingBody(const PingRec &r) {
-  String b = String("{\"device_id\":\"") + DEVICE_ID + "\",\"site_id\":\"" + SITE_ID + "\"";
+  String b = String("{\"device_id\":\"") + ident.device_id + "\",\"site_id\":\"" + SITE_ID + "\"";
   b += ",\"seq\":" + String(r.seq);
   b += ",\"lat\":" + String(r.lat, 6) + ",\"lon\":" + String(r.lon, 6);
   b += ",\"batt\":" + String(r.batt, 2);
@@ -968,6 +971,8 @@ bool postBody(const String &body) {
   http.post(SERVER_PATH);
   http.sendHeader("Content-Type", "application/json");
   http.sendHeader("Content-Length", body.length());
+  // 등록 코드(v1.3.1). 서버가 계정 등록부와 대조한다. 등록 전이면 401 → 저장소에 남겨 두고 등록 뒤 보낸다.
+  http.sendHeader("Authorization", String("Bearer ") + ident.secret);
   http.beginBody();
   http.print(body);
   http.endRequest();
@@ -1085,6 +1090,11 @@ void setup() {
 #endif
   Serial.begin(115200);
   analogReadResolution(12);
+  // 신원(v1.3.1). 딥슬립 웨이크가 아닐 때(전원 투입·USB 연결로 리셋)만 3초 동안 설치 화면 질의에 답한다.
+  // 웹 화면이 포트를 열면 보드가 리셋되므로 그때 이 창이 열린다. 딥슬립 웨이크마다 기다리면 전기만 쓴다.
+  floatee::loadOrCreate(ident);
+  Serial.printf("[FF] device_id=%s  등록 https://floatee.caresea.kr/start\n", ident.device_id);
+  if (esp_reset_reason() != ESP_RST_DEEPSLEEP) floatee::listenWindow(Serial, ident, FW_VERSION, 3000);
   Serial.printf("[FF] fw %s %s 빌드 (USE_WIFI=%d BENCH_HTTP=%d GNSS_STANDBY=%d)\n", FW_VERSION,
                 RELEASE_BUILD ? "방류" : "벤치", USE_WIFI, BENCH_HTTP, GNSS_STANDBY);
 #if !USE_WIFI && !BENCH_HTTP
@@ -1093,9 +1103,9 @@ void setup() {
   storeBegin();
 
   // ── 리셋 사유와 순단 복구(v1.3) ──
-  // 리셋 사유 로깅(재QA #5): 브라운아웃(ESP_RST_BROWNOUT=6)이 반복되면 저전압 가드·전원설계 재검토 신호
+  // 리셋 사유 로깅(재QA #5): 브라운아웃(ESP_RST_BROWNOUT=9 · IDF 5.1 헤더 확인 2026-10-04)이 반복되면 저전압 가드·전원설계 재검토 신호
   g_reset = esp_reset_reason();
-  Serial.printf("[FF] reset_reason=%d (1=전원 3=SW 4=panic 6=BROWNOUT 8=deepsleep)\n", (int)g_reset);
+  Serial.printf("[FF] reset_reason=%d (1=전원 3=SW 4=panic 6=태스크WDT 8=deepsleep 9=BROWNOUT)\n", (int)g_reset);
   prefs.begin("ffid", false);
   g_vcal_gain = prefs.getFloat("vcal_g", VBAT_CAL_GAIN);   // NVS 보정값이 있으면 상수보다 앞선다
   g_vcal_off  = prefs.getFloat("vcal_o", VBAT_CAL_OFFSET_V);
