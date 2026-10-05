@@ -43,7 +43,7 @@
  *    1대 PoC는 국내 데이터 유심 또는 글로벌 IoT SIM으로 접속 테스트만 수행한다.
  */
 
-#define FW_VERSION "1.3.1"
+#define FW_VERSION "1.3.2"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -149,6 +149,16 @@ const uint32_t BATCH_MAX = 20;
 // GPS 기록은 매 웨이크 그대로 쌓는다. 접속이 한 번 되면 처음으로 돌아간다.
 const uint32_t NET_BACKOFF_START_MINUTES = 60;
 const uint32_t STRANDED_TRY_MINUTES = 360;   // 백오프 최대치
+
+// ── 켠 직후(v1.3.2, 2026-10-06) ──
+// 전원 투입(슬라이드 스위치 ON, 셀 넣기, 자석 떼기, USB 리셋)은 「새로 시작」으로 본다.
+//  ① 접속 실패 백오프와 GPS 실패 횟수를 지운다. v1.3.1 까지는 이 값이 NVS 에 남아, 벤치에서 접속에
+//     실패한 기기를 껐다 켜도 60분 이상 모뎀을 켜지 않았다(현장에서 「첫 신호」가 오지 않는다).
+//  ② 켠 뒤 LAUNCH_FAST_MINUTES 동안은 LAUNCH_FAST_INTERVAL 분 간격으로 보낸다. 방류 직후 화면에서
+//     흐르기 시작했는지 바로 보이게 한다. 전압이 60분 계단 이상(3.90 V↑)일 때만이며, 저전압 기록이
+//     있는 기기(보호회로 차단 뒤 되살아남)는 하지 않는다.
+const uint32_t LAUNCH_FAST_MINUTES  = 60;
+const uint32_t LAUNCH_FAST_INTERVAL = 5;
 
 // ── LTE 망·전송 (v1.3, 전문가 검수 03 문서 7장) ──
 // LTE 만 쓴다(AT+CNMP=38). 2G·3G 탐색 시간을 없앤다. 모뎀이 설정을 기억하므로 다를 때만 쓴다.
@@ -410,6 +420,7 @@ RTC_DATA_ATTR uint32_t rtc_seq   = 0;   // 단조증가 레코드 카운터(딥�
 RTC_DATA_ATTR bool     rtc_gnss_kept = false;       // 직전 잠에서 L76K 를 대기로 살려 두었나(GNSS_STANDBY)
 RTC_DATA_ATTR float    rtc_prev_wake_mah = -1, rtc_prev_wake_s = -1, rtc_prev_i_peak = -1;
 RTC_DATA_ATTR char     rtc_iccid[24] = "";
+RTC_DATA_ATTR uint32_t rtc_launch_left_m = 0;   // 켠 직후 빠른 보고가 남은 분(v1.3.2)
 
 // ── 리셋에도 살아야 하는 상태(v1.3 「순단 복구」) ──
 // 딥슬립 웨이크에서는 RTC 메모리가 남지만, 브라운아웃·패닉·보호회로 차단 뒤에는 RTC 가 지워질 수 있다.
@@ -583,6 +594,13 @@ uint32_t chooseIntervalM(float v, bool fastReport, bool weir) {
   // 회수 구역 밖·지오펜스 안: 전압이 넉넉하면(60분 계단 이상) 30분 간격으로 회수를 돕는다
   if (fastReport && t <= 1 && m > OUT_ZONE_MINUTES) m = OUT_ZONE_MINUTES;
   return m;
+}
+
+// 켠 직후 빠른 보고(v1.3.2). chooseIntervalM 뒤에 부른다. 전압이 60분 계단 이상이거나 USB 급전일 때만.
+uint32_t launchIntervalM(uint32_t m, float v) {
+  if (rtc_launch_left_m == 0) return m;
+  if (v >= 1.0f && st.tier > 1) return m;
+  return m < LAUNCH_FAST_INTERVAL ? m : LAUNCH_FAST_INTERVAL;
 }
 
 // seq를 NVS와 동기화: 전원상실 후에도 단조증가 유지(중복 seq 방지가 목적, 갭은 허용)
@@ -1127,6 +1145,18 @@ void setup() {
   }
   nvsSetBool("txing", false);
 
+  // ── 켠 직후(v1.3.2) ── 전원 투입이면 백오프·GPS 실패를 지우고 빠른 보고 창을 연다.
+  // 좌초·보 체류 누적(anchor·weir)은 지우지 않는다. 보호회로 차단 뒤 되살아남도 전원 투입이라
+  // 그 연속성을 끊지 않는다. 자리가 50 m 넘게 바뀌면 첫 고정에서 저절로 새로 잡힌다.
+  if (g_reset == ESP_RST_POWERON) {
+    st.last_net_fail = false; st.net_fails = 0; st.min_since_try = 0; st.last_sleep_m = 0;
+    st.gps_fails = 0; st.gps_short_n = 0;
+    rtc_launch_left_m = nvsGetBool("lowbatt") ? 0 : LAUNCH_FAST_MINUTES;
+    Serial.printf("[FF] 전원 투입 → 접속 대기 기록 초기화, 빠른 보고 %lu분\n", (unsigned long)rtc_launch_left_m);
+  } else if (g_reset == ESP_RST_DEEPSLEEP && rtc_launch_left_m > 0) {
+    rtc_launch_left_m = st.last_sleep_m >= rtc_launch_left_m ? 0 : rtc_launch_left_m - st.last_sleep_m;
+  }
+
   // ★저전압 park(모뎀·GPS 켜기 전에 먼저): 심방전 구간이면 아무 동작 없이 장주기로 자 셀을 보호한다.
   float vbat0 = readBatteryV();
   if (vbat0 > 1.0f && vbat0 < BATT_PARK_V) {   // >1.0V = 측정 유효(USB 급전·미장착 오검 배제)
@@ -1135,7 +1165,7 @@ void setup() {
     nvsSetBool("lowbatt", true);           // 되살아남 판정용(보호회로 차단으로 RTC가 지워져도 남는다)
     deepSleepFor(parkM);
   }
-  g_next_sleep_m = chooseIntervalM(vbat0, false, false);
+  g_next_sleep_m = launchIntervalM(chooseIntervalM(vbat0, false, false), vbat0);
 
   st.min_since_try += st.last_sleep_m;
 
@@ -1218,7 +1248,7 @@ void setup() {
     }
     if ((r.batt > 1.0f && r.batt < V_RECOVER) || (f & (F_OUTZONE | F_STRANDED | F_LAST | F_GEOFENCE))) f |= F_RECOVER;
     r.flags = f;
-    g_next_sleep_m = chooseIntervalM(r.batt, outZone || fenced, weir);
+    g_next_sleep_m = launchIntervalM(chooseIntervalM(r.batt, outZone || fenced, weir), r.batt);
     r.interval_m = (uint16_t)g_next_sleep_m;
 
     storePush(r);
