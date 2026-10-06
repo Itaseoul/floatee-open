@@ -43,7 +43,7 @@
  *    1대 PoC는 국내 데이터 유심 또는 글로벌 IoT SIM으로 접속 테스트만 수행한다.
  */
 
-#define FW_VERSION "1.3.2"
+#define FW_VERSION "1.3.3"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -526,13 +526,25 @@ bool persistLoad() {
   return true;
 }
 
+// ── ADC 잠금(v1.3.3) ──
+// 송신 중에는 본 작업(readBatteryV)과 전압 감시 작업(vmonTask)이 ADC 를 함께 읽는다. 동시에 읽으면 ADC 드라이버가
+// 오류 로그를 찍고, 그 printf 가 감시 작업의 2 KB 스택을 넘어 패닉이 났다(2026-10-06 1호기 벤치, Stack canary vmon).
+// 읽기를 한 번에 하나씩만 하게 잠근다.
+SemaphoreHandle_t g_adc_mtx = xSemaphoreCreateMutex();
+uint32_t adcMv(int pin) {
+  xSemaphoreTake(g_adc_mtx, portMAX_DELAY);
+  uint32_t mv = analogReadMilliVolts(pin);
+  xSemaphoreGive(g_adc_mtx);
+  return mv;
+}
+
 // ── 배터리 전압 ──
 // 100k/100k 분압 가정. analogReadMilliVolts로 eFuse Vref 교정(재QA #3:
 // raw*3.3/4095는 ADC 비선형·Vref 편차로 저전압 판정이 수십 mV 어긋난다 → 밀리볼트 API가 교정 내장).
 // 저전압 컷오프가 이 값에 걸리므로 교정이 가드의 전제다. v1.3 부터 보드별 보정(GAIN·OFFSET)을 더한다.
 float readBatteryV() {
   uint32_t mv = 0;
-  for (int i = 0; i < 16; i++) mv += analogReadMilliVolts(BOARD_BAT_ADC);
+  for (int i = 0; i < 16; i++) mv += adcMv(BOARD_BAT_ADC);
   mv /= 16;
   float v = (mv / 1000.0f) * 2.0f;  // 분압 2배
   if (v < 1.0f) return v;           // 측정 무효(USB 급전·미장착)는 보정하지 않는다(가드가 1.0 V 로 거른다)
@@ -543,7 +555,7 @@ float readBatteryV() {
 uint16_t readSolarMv() {
 #if SOLAR_ADC_PIN >= 0
   uint32_t mv = 0;
-  for (int i = 0; i < 8; i++) mv += analogReadMilliVolts(SOLAR_ADC_PIN);
+  for (int i = 0; i < 8; i++) mv += adcMv(SOLAR_ADC_PIN);
   mv /= 8;
   float v = mv * SOLAR_ADC_DIV;
   return v > 65000 ? 65000 : (uint16_t)v;
@@ -660,7 +672,7 @@ TaskHandle_t      g_vmon_task = nullptr;
 void vmonTask(void*) {
   for (;;) {
     if (g_vmon_run) {
-      float v = analogReadMilliVolts(BOARD_BAT_ADC) * 2 / 1000.0f;
+      float v = adcMv(BOARD_BAT_ADC) * 2 / 1000.0f;
       if (v > 1.0f) {
         v = v * g_vcal_gain + g_vcal_off;
         uint16_t m = (uint16_t)(v * 1000.0f);
@@ -672,7 +684,7 @@ void vmonTask(void*) {
 }
 void vmonStart() {
   g_vmin_mv = 0xFFFF;
-  if (!g_vmon_task) xTaskCreate(vmonTask, "vmon", 2048, nullptr, 1, &g_vmon_task);
+  if (!g_vmon_task) xTaskCreate(vmonTask, "vmon", 4096, nullptr, 1, &g_vmon_task);   // v1.3.3: 2048 → 4096(로그 한 줄에 넘쳤다)
   g_vmon_run = true;
 }
 void vmonStop() { g_vmon_run = false; }
