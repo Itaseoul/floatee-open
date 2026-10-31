@@ -121,7 +121,7 @@ Only two parts are spec-critical to source. Everything else is generic hardware 
   - **CIGS** — higher efficiency, but the common flexible CIGS is on a **stainless-steel** substrate (industry-standard, since CIGS needs >500 °C processing) = a metal RF shield over the antenna = disqualified. Only Cd-free CIGS on **polyimide** (non-metal) is acceptable, and it is less common and more expensive. Do not pay more for CIGS here.
   - **CdTe / perovskite — no** (toxicity / immaturity / RF).
   - Rule regardless of source: **verify the substrate is non-metal.** A steel-backed panel kills the radio even if everything else is perfect.
-- **Everything else is local:** 18650 cell with a protection circuit (Korean kit: unprotected Samsung 30Q in an external holder + PCM, 3.7 V 1-cell, continuous ≥3 A), SIM, uFL antennas, the PET bottle, ballast (a fishing sinker), marine sealant, bright tape / QR label / recovery loop, and the printed inserts (print them yourself). None need importing.
+- **Everything else is local:** 18650 cell with a protection circuit (Korean kit, from 2026-10-30: a protected cell with the circuit built in; an unprotected cell such as the Samsung 30Q must go through a PCM, 3.7 V 1-cell, continuous ≥3 A), SIM, uFL antennas, the PET bottle, ballast (a fishing sinker), marine sealant, bright tape / QR label / recovery loop, and the printed inserts (print them yourself). None need importing.
 
 ---
 
@@ -138,7 +138,7 @@ Generic checklist (applies everywhere):
 
 Worked example — Korea (one locale among many):
 - **Radio (updated 2026-09-26):** one unit per model imported by an individual for personal use needs no application. The research/development exemption confirmation (RRA, up to 1,500 units) is needed only for **two or more units of the same model**, or several units in an organisation's name. Participants each buy one unit in their own name.
-- **SIM:** each participant uses their **own domestic SIM in their own name**. Korea domestic route: HelloMobile Slim 500MB on the LG U+ network (NFC SIM KRW 8,800, KRW 1,700/month), voice-inclusive plan, activate in a phone first, then move it to the board. The A7670G covers all three Korean carriers' LTE bands. Global IoT roaming SIMs (KT/SKT only) remain an option.
+- **SIM:** each participant uses their **own domestic SIM in their own name**. Korea domestic route: any carrier (KT, SKT, LG U+ and their MVNOs), voice-inclusive plan, activate in a phone first, then move it to the board. The A7670G covers all three Korean carriers' LTE bands. No carrier has been confirmed on this board yet. Global IoT roaming SIMs (1NCE / Soracom, KT/SKT only, not LG U+) remain an option.
 - **Water:** the Nakdong main channel and estuary are a national river plus a natural-monument/wetland protected zone (national-level consent). An ordinary tributary stream (managed by the city/district) is the low-friction pilot site and is still genuinely "source to sea" because the tributary flows to the estuary.
 - The rest (battery safety, recovery-first, wildlife, notify water users) is the same universal set above.
 

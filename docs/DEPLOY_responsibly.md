@@ -13,7 +13,7 @@ We give you the design. The release is yours. Before you put units in the water,
 ## Worked example — Korea (one locale among many)
 
 - Radio (updated 2026-09-26): one unit per model imported by an individual for personal use is exempt and needs no application. A research/development exemption confirmation from the national radio agency (RRA, up to 1,500 units) is needed only when **two or more units of the same model** are imported, or several units in an organisation's name. Participants each buy one unit in their own name.
-- SIM: in Korea each participant uses **their own domestic SIM in their own name** (recommended: HelloMobile Slim 500MB on the LG U+ network, voice-inclusive plan, activated in a phone first). Global IoT roaming SIMs (1NCE / Soracom) roam on KT/SKT only.
+- SIM: in Korea each participant uses **their own domestic SIM in their own name** (any carrier, voice-inclusive plan, activated in a phone first; no carrier confirmed on this board yet). Global IoT roaming SIMs (1NCE / Soracom) roam on KT/SKT only.
 - Water: the Nakdong main channel and estuary are a national river plus a natural-monument and wetland protected zone (national-level consent). An ordinary tributary stream, managed by the city or district, is the low-friction pilot site and is still genuinely source-to-sea because the tributary flows to the estuary.
 - The rest (battery safety, recovery-first, wildlife, notify water users) is the same universal set above.
 
