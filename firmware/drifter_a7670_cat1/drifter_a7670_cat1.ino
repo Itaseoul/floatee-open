@@ -425,7 +425,14 @@ RTC_DATA_ATTR char     rtc_iccid[24] = "";
 //   새 보호셀). RTC_NOINIT 는 전원이 완전히 끊기면 값이 지워지므로, 표시가 없으면 「새로 켠 것」으로 본다.
 RTC_NOINIT_ATTR uint32_t rtc_cold_mark;
 static const uint32_t COLD_MARK = 0xF10A7EE5;
-bool g_cold = false;   // 전원을 새로 켰다(POWERON 이거나, 표시 없는 BROWNOUT)
+bool g_cold = false;
+// ★v1.3.4 진단: 지금 무엇을 하는 중인지. 브라운아웃으로 재부팅되면 어느 단계에서 쓰러졌는지 NVS 에 센다.
+//   1 깨어남 2 GPS 레일 3 모뎀 리셋 4 모뎀 PWRKEY 뒤 5 망 접속 6 전송 7 잠들기 준비 8 잠듦
+RTC_NOINIT_ATTR uint8_t rtc_stage;
+// ★v1.3.4: RTC_DATA 는 딥슬립이 아닌 리셋(브라운아웃 포함)마다 초기값으로 돌아간다. 켤 때 브라운아웃이
+//   두 번 연달아 나면 두 번째에서 빠른 보고 창이 0 으로 지워졌다(1호기 00:08 실측). 남은 분을 여기에도 둔다.
+RTC_NOINIT_ATTR uint32_t rtc_launch_keep;
+#define STAGE(n) (rtc_stage = (n))   // 전원을 새로 켰다(POWERON 이거나, 표시 없는 BROWNOUT)
 RTC_DATA_ATTR uint32_t rtc_launch_left_m = 0;   // 켠 직후 빠른 보고가 남은 분(v1.3.2)
 
 // ── 리셋에도 살아야 하는 상태(v1.3 「순단 복구」) ──
@@ -697,6 +704,7 @@ void vmonStop() { g_vmon_run = false; }
 
 #if !USE_WIFI
 void modemPowerOn() {
+  STAGE(3);
   pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH);
   // ★T-A7670 계열 RST는 HIGH=리셋 어서트(공식 utilities.h MODEM_RESET_LEVEL=HIGH). 유휴=LOW.
   //   (검수에서 잡은 v1.0 계승 버그: HIGH로 방치하면 모뎀이 리셋에 잡혀 testAT 전패)
@@ -708,6 +716,7 @@ void modemPowerOn() {
   digitalWrite(BOARD_PWRKEY, LOW);  delay(100);
   digitalWrite(BOARD_PWRKEY, HIGH); delay(1000);  // PWRKEY 펄스
   digitalWrite(BOARD_PWRKEY, LOW);
+  STAGE(4);
   modem_on = true;
 }
 
@@ -844,6 +853,7 @@ bool pdpConnect() {
 #endif
 
 bool netConnect() {
+  STAGE(5);
   st.net_stage_prev = NS_NONE;
   st.reg_s_prev = 0xFFFF; st.rsrp_prev = INT16_MIN; st.rssi_prev = INT16_MIN;
   st.rsrq_prev = INT8_MIN; st.cell_id_prev = 0;
@@ -977,6 +987,7 @@ int satsInView() {
 // ★v1.3: GPS_SKY_CHECK_MS 가 지나도 NMEA 가 없거나 보이는 위성이 GPS_SKY_MAX_POOR 개 이하면 곧바로 포기한다.
 //   걸린 시간은 g_gnss_fix_s 에 남는다.
 bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
+  STAGE(2);
   pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH);  // GPS 레일 확보(모뎀보다 먼저 필요)
   pinMode(BOARD_GPS_WAKEUP_PIN, OUTPUT); digitalWrite(BOARD_GPS_WAKEUP_PIN, HIGH);  // 대기였으면 깨운다
   SerialGPS.begin(GPS_BAUDRATE, SERIAL_8N1, BOARD_GPS_RX_PIN, BOARD_GPS_TX_PIN);
@@ -1056,6 +1067,7 @@ bool postBody(const String &body) {
 // v1.3: 한 묶음을 세션 안에서 POST_TRIES 번까지 보내고, 웨이크당 상한(건수·POST 수)과 묶음 사이 전압을 본다.
 // 반환: 보낸 개수.
 int flushStore() {
+  STAGE(6);
   uint32_t sent = 0, posts = 0;
   uint32_t bmax = g_weak_signal ? BATCH_WEAK : BATCH_MAX;
   if (g_weak_signal && BATCH_POST) Serial.printf("[FF] 약신호 → 한 번에 %lu건\n", (unsigned long)bmax);
@@ -1108,6 +1120,7 @@ int flushStore() {
 // GNSS_STANDBY 0: 모뎀을 명령으로 끈 뒤(3~5초 확인) 모뎀·L76K 레일을 끊고(POWERON LOW) GPIO를 홀드한다.
 // GNSS_STANDBY 1: 모뎀만 명령으로 끄고 레일은 살려 두며, L76K 는 WAKEUP LOW 로 대기에 둔다(온시동).
 void deepSleepFor(uint32_t minutes) {
+  STAGE(7);
 #if USE_WIFI
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);   // 슬립 전 라디오를 끈다. 안 끄면 딥슬립 진입이 늦고 전류가 남는다
@@ -1137,6 +1150,7 @@ void deepSleepFor(uint32_t minutes) {
   gpio_deep_sleep_hold_en();
   inaFinishWake();
   esp_sleep_enable_timer_wakeup((uint64_t)minutes * 60ULL * 1000000ULL);
+  STAGE(8);
   esp_deep_sleep_start();
 }
 
@@ -1174,6 +1188,20 @@ void setup() {
   g_reset = esp_reset_reason();
   g_cold = (g_reset == ESP_RST_POWERON) || (g_reset == ESP_RST_BROWNOUT && rtc_cold_mark != COLD_MARK);
   rtc_cold_mark = COLD_MARK;
+  {
+    uint8_t died = rtc_stage;
+    prefs.begin("ffbo", false);
+    if (g_reset == ESP_RST_BROWNOUT && !g_cold && died >= 1 && died <= 8) {
+      char k[4] = {'s', (char)('0' + died), 0, 0};
+      prefs.putUShort(k, prefs.getUShort(k, 0) + 1);
+      Serial.printf("[FF] 브라운아웃: 단계 %u 에서 쓰러짐\n", died);
+    }
+    Serial.print("[FF] 브라운아웃 단계별 누적(1깸 2GPS 3모뎀리셋 4PWRKEY 5접속 6전송 7잠준비 8잠):");
+    for (uint8_t i = 1; i <= 8; i++) { char k[4] = {'s', (char)('0' + i), 0, 0}; Serial.printf(" %u=%u", i, prefs.getUShort(k, 0)); }
+    Serial.println();
+    prefs.end();
+  }
+  STAGE(1);
   if (g_cold && g_reset == ESP_RST_BROWNOUT) Serial.println("[FF] 켤 때 전압 흔들림(BROWNOUT) → 전원 투입으로 본다");
   Serial.printf("[FF] reset_reason=%d (1=전원 3=SW 4=panic 6=태스크WDT 8=deepsleep 9=BROWNOUT)\n", (int)g_reset);
   prefs.begin("ffid", false);
@@ -1207,7 +1235,11 @@ void setup() {
     Serial.printf("[FF] 전원 투입 → 접속 대기 기록 초기화, 빠른 보고 %lu분\n", (unsigned long)rtc_launch_left_m);
   } else if (g_reset == ESP_RST_DEEPSLEEP && rtc_launch_left_m > 0) {
     rtc_launch_left_m = st.last_sleep_m >= rtc_launch_left_m ? 0 : rtc_launch_left_m - st.last_sleep_m;
+  } else if (g_reset != ESP_RST_DEEPSLEEP && rtc_launch_keep > 0 && rtc_launch_keep <= LAUNCH_FAST_MINUTES) {
+    rtc_launch_left_m = rtc_launch_keep;   // 리셋으로 RTC_DATA 가 지워졌어도 남은 빠른 보고 창을 잇는다
+    Serial.printf("[FF] 리셋 뒤 빠른 보고 창 이어감 %lu분\n", (unsigned long)rtc_launch_left_m);
   }
+  rtc_launch_keep = rtc_launch_left_m;
 
   // ★저전압 park(모뎀·GPS 켜기 전에 먼저): 심방전 구간이면 아무 동작 없이 장주기로 자 셀을 보호한다.
   float vbat0 = readBatteryV();
