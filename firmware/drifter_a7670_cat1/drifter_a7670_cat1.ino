@@ -43,7 +43,7 @@
  *    1대 PoC는 국내 데이터 유심 또는 글로벌 IoT SIM으로 접속 테스트만 수행한다.
  */
 
-#define FW_VERSION "1.3.3"
+#define FW_VERSION "1.3.4"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -421,6 +421,11 @@ RTC_DATA_ATTR uint32_t rtc_seq   = 0;   // 단조증가 레코드 카운터(딥�
 RTC_DATA_ATTR bool     rtc_gnss_kept = false;       // 직전 잠에서 L76K 를 대기로 살려 두었나(GNSS_STANDBY)
 RTC_DATA_ATTR float    rtc_prev_wake_mah = -1, rtc_prev_wake_s = -1, rtc_prev_i_peak = -1;
 RTC_DATA_ATTR char     rtc_iccid[24] = "";
+// ★v1.3.4: 스위치를 켜는 순간 전압이 흔들려 첫 부팅이 POWERON 이 아니라 BROWNOUT 으로 찍혔다(1호기 2026-11-01,
+//   새 보호셀). RTC_NOINIT 는 전원이 완전히 끊기면 값이 지워지므로, 표시가 없으면 「새로 켠 것」으로 본다.
+RTC_NOINIT_ATTR uint32_t rtc_cold_mark;
+static const uint32_t COLD_MARK = 0xF10A7EE5;
+bool g_cold = false;   // 전원을 새로 켰다(POWERON 이거나, 표시 없는 BROWNOUT)
 RTC_DATA_ATTR uint32_t rtc_launch_left_m = 0;   // 켠 직후 빠른 보고가 남은 분(v1.3.2)
 
 // ── 리셋에도 살아야 하는 상태(v1.3 「순단 복구」) ──
@@ -810,6 +815,34 @@ bool g_weak_signal = false;   // 이번 세션 약신호(RSRP < SIG_WEAK_RSRP)
 // 망에 붙는다. Wi-Fi 와 LTE 의 차이를 여기 한 곳에 가두어 setup 이 같은 모양을 유지하게 한다.
 // 실패하면 false — 호출부는 관측을 버퍼에 남긴 채 슬립한다(store-and-forward).
 // 결과(단계·등록 시간·신호)는 st.*_prev 에 남아 다음 레코드에 실린다.
+#if !USE_WIFI
+// ★v1.3.4(2026-11-01): A7670 은 LTE 접속 때 기본 베어러가 이미 열려 있으면 AT+CGACT=1,1 에
+//   「+CME ERROR: unknown error」를 준다. TinyGSM 은 그걸 실패로 보고 NETOPEN 까지 가지 않는다.
+//   그래서 gprsConnect 가 거짓이면 NETOPEN 으로 실제 연결 여부를 한 번 더 확인한다(1호기 실측).
+bool pdpConnect() {
+  // ★v1.3.4: 망 등록 직후에는 모뎀 TCP/IP 스택이 아직 준비 전이라 AT+CIPMODE 가 ERROR 를 주고,
+  //   그 상태에서 AT+CIPCCFG 를 보내면 모뎀이 재부팅했다(1호기 AT 기록 2026-11-01).
+  //   CIPMODE 가 OK 를 줄 때까지 기다린 뒤 연결한다(최대 30초).
+  uint32_t r0 = millis();
+  bool ready = false;
+  while (millis() - r0 < 30000UL) {
+    modem.sendAT(GF("+CIPMODE=0"));
+    if (modem.waitResponse(2000UL) == 1) { ready = true; break; }
+    delay(1000);
+  }
+  Serial.printf("[FF] 모뎀 IP 스택 %s (%lums)\n", ready ? "준비" : "준비 안 됨", (unsigned long)(millis() - r0));
+  if (modem.gprsConnect(APN, GPRS_USER, GPRS_PASS)) return true;
+  Serial.println("[FF] gprsConnect 거짓 -> NETOPEN 직접 확인");
+  modem.sendAT(GF("+NETOPEN?"));
+  if (modem.waitResponse(3000UL, GF("+NETOPEN: 1")) == 1) { modem.waitResponse(); return true; }
+  modem.waitResponse();
+  modem.sendAT(GF("+NETOPEN"));
+  int r = modem.waitResponse(75000UL, GF("+NETOPEN: 0"), GF("+NETOPEN: 1"));
+  if (r == 1) return true;
+  return modem.isGprsConnected();
+}
+#endif
+
 bool netConnect() {
   st.net_stage_prev = NS_NONE;
   st.reg_s_prev = 0xFFFF; st.rsrp_prev = INT16_MIN; st.rssi_prev = INT16_MIN;
@@ -897,7 +930,7 @@ bool netConnect() {
     if (k + 1 < SIG_SAMPLES) delay(SIG_SAMPLE_GAP_MS);
   }
   g_weak_signal = (best != INT16_MIN && best < SIG_WEAK_RSRP);
-  if (!modem.gprsConnect(APN, GPRS_USER, GPRS_PASS)) {
+  if (!pdpConnect()) {
     Serial.println("[FF] PDP 실패(APN 확인) → 버퍼 보존, 슬립");
     st.net_stage_prev = NS_PDP;
     return false;
@@ -915,7 +948,7 @@ bool netAlive() {
 #else
   if (modem.isGprsConnected()) return true;
   Serial.println("[FF] PDP 끊김 → 한 번 다시 연결");
-  return modem.gprsConnect(APN, GPRS_USER, GPRS_PASS);
+  return pdpConnect();
 #endif
 }
 
@@ -998,6 +1031,9 @@ void gpsIso8601(char* buf, size_t n) {
 
 // POST 한 번. 2xx 면 true.
 bool postBody(const String &body) {
+  // ★v1.3.4: TinyGSM A76xxSSL 은 서버가 응답과 함께 연결을 닫으면(Connection: close) 응답을 읽기 전에
+  //   세션을 닫힌 것으로 보고 버린다(+CCH_PEER_CLOSED 뒤 응답 -3). TinyGSM HttpsClient 예제가 요구하는 대로 keep-alive.
+  http.connectionKeepAlive();
   http.beginRequest();
   http.post(SERVER_PATH);
   http.sendHeader("Content-Type", "application/json");
@@ -1136,13 +1172,16 @@ void setup() {
   // ── 리셋 사유와 순단 복구(v1.3) ──
   // 리셋 사유 로깅(재QA #5): 브라운아웃(ESP_RST_BROWNOUT=9 · IDF 5.1 헤더 확인 2026-10-04)이 반복되면 저전압 가드·전원설계 재검토 신호
   g_reset = esp_reset_reason();
+  g_cold = (g_reset == ESP_RST_POWERON) || (g_reset == ESP_RST_BROWNOUT && rtc_cold_mark != COLD_MARK);
+  rtc_cold_mark = COLD_MARK;
+  if (g_cold && g_reset == ESP_RST_BROWNOUT) Serial.println("[FF] 켤 때 전압 흔들림(BROWNOUT) → 전원 투입으로 본다");
   Serial.printf("[FF] reset_reason=%d (1=전원 3=SW 4=panic 6=태스크WDT 8=deepsleep 9=BROWNOUT)\n", (int)g_reset);
   prefs.begin("ffid", false);
   g_vcal_gain = prefs.getFloat("vcal_g", VBAT_CAL_GAIN);   // NVS 보정값이 있으면 상수보다 앞선다
   g_vcal_off  = prefs.getFloat("vcal_o", VBAT_CAL_OFFSET_V);
   g_brownouts = prefs.getUShort("bo_n", 0);
   g_tx_interrupted = prefs.getBool("txing", false);
-  if (g_reset == ESP_RST_BROWNOUT && g_brownouts < 65535) prefs.putUShort("bo_n", ++g_brownouts);
+  if (g_reset == ESP_RST_BROWNOUT && !g_cold && g_brownouts < 65535) prefs.putUShort("bo_n", ++g_brownouts);
   if (!rtc_iccid[0]) {
     String s = prefs.getString("iccid", "");
     strncpy(rtc_iccid, s.c_str(), sizeof(rtc_iccid) - 1);
@@ -1150,7 +1189,7 @@ void setup() {
   }
   prefs.end();
   if (g_reset != ESP_RST_DEEPSLEEP) {
-    g_unexpected_reset = (g_reset != ESP_RST_POWERON);   // 첫 전원 투입(셀 넣기)은 사고가 아니다
+    g_unexpected_reset = !g_cold;   // 첫 전원 투입(셀 넣기)은 사고가 아니다
     if (persistLoad()) Serial.println("[FF] 리셋 뒤 상태를 NVS 에서 되살림(좌초·보 체류 누적, 백오프, 전압 계단)");
     if (g_tx_interrupted) { g_unexpected_reset = true; Serial.println("[FF] 직전 웨이크가 송신 도중 끊겼다 → 이어 보내기, 문턱 +0.10V"); }
   } else {
@@ -1161,7 +1200,7 @@ void setup() {
   // ── 켠 직후(v1.3.2) ── 전원 투입이면 백오프·GPS 실패를 지우고 빠른 보고 창을 연다.
   // 좌초·보 체류 누적(anchor·weir)은 지우지 않는다. 보호회로 차단 뒤 되살아남도 전원 투입이라
   // 그 연속성을 끊지 않는다. 자리가 50 m 넘게 바뀌면 첫 고정에서 저절로 새로 잡힌다.
-  if (g_reset == ESP_RST_POWERON) {
+  if (g_cold) {
     st.last_net_fail = false; st.net_fails = 0; st.min_since_try = 0; st.last_sleep_m = 0;
     st.gps_fails = 0; st.gps_short_n = 0;
     rtc_launch_left_m = nvsGetBool("lowbatt") ? 0 : LAUNCH_FAST_MINUTES;
