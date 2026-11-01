@@ -67,7 +67,12 @@ void setup() {
   verdict("모뎀 응답", ok); if (!ok) return;
 
   at("ATE0"); at("ATI"); at("AT+CGSN");
-  ok = at("AT+CPIN?", 5000, "READY").indexOf("READY") >= 0;
+  // 켠 직후에는 유심이 아직 준비 중이라 +CME ERROR: 14(SIM busy)가 온다. 20초까지 되묻는다(2026-11-01 1호기 실측: 1초 뒤 READY).
+  ok = false;
+  for (int i = 0; i < 10 && !ok; i++) {
+    ok = at("AT+CPIN?", 2000, "READY").indexOf("READY") >= 0;
+    if (!ok) delay(2000);
+  }
   verdict("유심 인식", ok);
   if (!ok) { Serial.println("  SIM PIN 이 걸렸거나 유심이 제대로 안 들어갔다"); return; }
   at("AT+CICCID");
