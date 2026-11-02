@@ -212,7 +212,11 @@ const uint8_t  GPS_FULL_TRY_EVERY   = 6;     // 짧게 기다리는 동안에도
 // 0 = v1.2 방식. 잘 때 IO12 를 LOW 로 내려 레일째 끊는다 → 매번 냉시동(원문 30초, 병 안에서는 40~90초 추정).
 // ★기본 0: 외장 L76K 의 VCC 가 IO12 레일 뒤인지 상시 3.3 V 인지 확인하지 못하였다. 벤치 B1 에서 두 방식의
 //   잠 전류와 GNSS 고정 시간(gnss_fix_s)을 나란히 잰 뒤 정한다. 60분 간격이면 하루 약 20 mAh 절약(계산).
-#define GNSS_STANDBY 0
+// ★2026-11-02 1로 바꿈: 배터리 운용에서 웨이크마다 브라운아웃 2~3회(밤새 84회 전부 IO12 켬 순간).
+//   회로도 V1.4: IO12 → Q7 → Q8(NCE3401)이 모뎀 VBAT(BAT, C3 100µF·C4 47µF·C5 22µF)를 ESP32 LDO 입력
+//   (DVDD4V2, 승압 출력)에 잇는다. 잘 때 레일을 끊으면 이 축전기가 비고, 켤 때 LDO 입력이 순간 무너진다.
+//   레일을 잘 때도 살려 두면 축전기가 차 있어 웨이크 때 돌입이 없다(모뎀은 CPOF 로 꺼진 상태).
+#define GNSS_STANDBY 1
 const uint32_t GNSS_WARM_MAX_MIN  = 240;    // 이보다 오래 잤으면 궤도 정보가 낡아 온시동을 기대하지 않는다(로그용)
 // 하늘 확인: 이 시간이 지나도 NMEA 가 한 글자도 없거나, 보이는 위성(GSV)이 이 수 이하면 곧바로 포기한다.
 // 교량 아래처럼 하늘이 막힌 자리에서 180초 × 60mA ≈ 3 mAh 를 매번 쓰지 않게 한다.
@@ -1164,6 +1168,10 @@ void setup() {
   gpio_hold_dis((gpio_num_t)BOARD_GPS_WAKEUP_PIN);
   gpio_hold_dis((gpio_num_t)MODEM_RST);
   gpio_hold_dis((gpio_num_t)BOARD_PWRKEY);
+#if GNSS_STANDBY
+  // 홀드를 풀기 전에 출력 HIGH 로 맞춰 둔다. 안 하면 푸는 순간 핀이 입력(풀다운)으로 돌아가 레일이 잠깐 꺼진다.
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP) { pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH); }
+#endif
   gpio_hold_dis((gpio_num_t)BOARD_POWERON);
   setCpuFrequencyMhz(CPU_MHZ);
 #if USE_INA219
