@@ -47,7 +47,7 @@
  *   LittleFS 자동 포맷 막기, L76K 설정 명령, 고정 품질 기다리기, GNSS 실패 횟수 싣기. 자세한 것은 CHANGELOG.
  */
 
-#define FW_VERSION "1.3.8"
+#define FW_VERSION "1.3.9"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -731,13 +731,26 @@ uint32_t launchIntervalM(uint32_t m, float v) {
 }
 
 // seq를 NVS와 동기화: 전원상실 후에도 단조증가 유지(중복 seq 방지가 목적, 갭은 허용)
+// ★v1.3.9: NVS 를 못 열면 getUInt 가 기본값 0 을 돌려줘 seq 가 1 부터 다시 시작할 수 있었다. 그러면 서버가
+//   새 기록을 「이미 받은 seq」로 버렸다(1호기 2026-11-03 08:18, 켤 때 브라운아웃 뒤 창가 위치 4건 유실 의심).
+//   ① 열기를 세 번까지 다시 해 보고 ② 사고 리셋에도 남는 RTC_NOINIT 사본(rtc_seq_keep)과 견줘 큰 값을 쓴다.
+//   ③ 그래도 못 열면 쓰지 않고 넘어가며(다음 웨이크에 다시 쓴다) 0 을 「최신」으로 믿지 않는다.
+RTC_NOINIT_ATTR uint32_t rtc_seq_keep;
+RTC_NOINIT_ATTR uint32_t rtc_seq_mark;
+static const uint32_t SEQ_MARK = 0x53455131;   // 'SEQ1' — 전원을 완전히 끊어 쓰레기값이면 무시
 uint32_t nextSeq() {
-  prefs.begin("ffid", false);
-  uint32_t nv = prefs.getUInt("seq", 0);
-  if (nv > rtc_seq) rtc_seq = nv;       // 전원상실 직후: NVS가 최신
+  if (rtc_seq_mark == SEQ_MARK && rtc_seq_keep > rtc_seq && rtc_seq_keep < 0x7FFFFFFF) rtc_seq = rtc_seq_keep;
+  bool ok = false;
+  for (int i = 0; i < 3 && !ok; i++) { ok = prefs.begin("ffid", false); if (!ok) delay(20); }
+  if (ok) {
+    uint32_t nv = prefs.getUInt("seq", 0);
+    if (nv > rtc_seq) rtc_seq = nv;       // 전원상실 직후: NVS가 최신
+  } else {
+    Serial.println("[FF] seq: NVS 열기 실패 → RTC 사본으로 잇는다");
+  }
   rtc_seq++;
-  prefs.putUInt("seq", rtc_seq);
-  prefs.end();
+  if (ok) { prefs.putUInt("seq", rtc_seq); prefs.end(); }
+  rtc_seq_keep = rtc_seq; rtc_seq_mark = SEQ_MARK;
   return rtc_seq;
 }
 
