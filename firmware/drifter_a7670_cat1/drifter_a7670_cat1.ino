@@ -41,9 +41,13 @@
  * ⚠ 법적: 자작 셀룰러 기기의 국내 실증은 전파법 적합성평가 대상이다. 다수 실증 전에
  *    국립전파연구원 연구·기술개발용 면제확인(별지 제12호, 1,500대 이하)을 받는다.
  *    1대 PoC는 국내 데이터 유심 또는 글로벌 IoT SIM으로 접속 테스트만 수행한다.
+ *
+ * ★v1.3.5(2026-11-02, 컴파일만 확인, 실기 시험 전): 워치독 둘(태스크 240초, RTC 900초)과 웨이크 시간 예산,
+ *   재부팅 고리 끊기, 모뎀 끄기 확인(PWRKEY 길게 누르기), IP 스택 준비 안 됨이면 연결 생략, 저전압 park 는 레일 차단,
+ *   LittleFS 자동 포맷 막기, L76K 설정 명령, 고정 품질 기다리기, GNSS 실패 횟수 싣기. 자세한 것은 CHANGELOG.
  */
 
-#define FW_VERSION "1.3.4"
+#define FW_VERSION "1.3.5"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -321,6 +325,52 @@ const GeoBox FENCES[] = {
 #include "floatee_identity.h"   // 기기 ID · 등록 코드 · 설치 화면 질의 응답(v1.3.1)
 floatee::Identity ident;
 #include <driver/gpio.h>
+#include <esp_task_wdt.h>
+#include "hal/wdt_hal.h"
+#include "soc/rtc.h"
+
+// Arduino 빌더가 함수 원형을 첫 함수 정의(wdtStart) 앞에 모아 넣는다. PingRec 을 쓰는 원형이 거기서 깨지지 않게 미리 알린다.
+struct PingRec;
+
+// ── 워치독(v1.3.5) ──
+// ① 태스크 워치독 240초: 본 작업(setup)이 240초 넘게 wdtFeed() 를 부르지 않으면 패닉 뒤 재부팅한다.
+//    긴 기다림(GPS, 망 등록, NETOPEN, 전송)마다 wdtFeed() 를 넣었다. 어느 한 곳에서 멈추면 잡힌다.
+// ② RTC 워치독 900초: 웨이크 전체 상한이다. wdtFeed() 가 먹이지 않는다. 코드가 먹이를 주며 계속 도는 경우
+//    (끝나지 않는 재시도 고리)까지 끊는다. 딥슬립 직전에 반드시 끈다(안 끄면 자는 중에 리셋된다).
+// ★브라운아웃 감지는 그대로 켜 둔다.
+const uint32_t TWDT_TIMEOUT_MS   = 240000;
+const uint32_t RTCWDT_TIMEOUT_S  = 900;
+const uint32_t WAKE_NET_BUDGET_MS = 600000;   // 망 단계(모뎀 켜기부터 전송 끝까지) 시간 예산
+static wdt_hal_context_t g_rwdt = RWDT_HAL_CONTEXT_DEFAULT();
+uint32_t g_net_deadline = 0;   // 0 = 예산 없음
+
+void wdtStart() {
+  esp_task_wdt_config_t cfg = {};
+  cfg.timeout_ms = TWDT_TIMEOUT_MS;
+  cfg.idle_core_mask = (1 << 0);   // 코어 0 의 idle 작업도 지켜본다(Arduino 기본과 같다)
+  cfg.trigger_panic = true;
+  if (esp_task_wdt_reconfigure(&cfg) != ESP_OK) esp_task_wdt_init(&cfg);   // 코어가 이미 켜 두었으면 다시 설정
+  esp_task_wdt_add(NULL);
+  // RTC 워치독. 느린 클럭(내부 RC 약 150 kHz) 틱으로 센다.
+  uint32_t hz = rtc_clk_slow_freq_get_hz();
+  if (hz < 1000) hz = 150000;
+  wdt_hal_write_protect_disable(&g_rwdt);
+  wdt_hal_init(&g_rwdt, WDT_RWDT, 0, false);
+  wdt_hal_config_stage(&g_rwdt, WDT_STAGE0, RTCWDT_TIMEOUT_S * hz, WDT_STAGE_ACTION_RESET_SYSTEM);
+  wdt_hal_enable(&g_rwdt);
+  wdt_hal_write_protect_enable(&g_rwdt);
+}
+// 태스크 워치독만 먹인다(RTC 워치독은 웨이크 전체 상한이라 먹이지 않는다).
+inline void wdtFeed() { esp_task_wdt_reset(); }
+// 딥슬립 직전에 둘 다 끈다.
+void wdtStop() {
+  wdt_hal_write_protect_disable(&g_rwdt);
+  wdt_hal_disable(&g_rwdt);
+  wdt_hal_write_protect_enable(&g_rwdt);
+  esp_task_wdt_delete(NULL);
+}
+// 망 단계 시간 예산을 넘었나
+bool budgetOver() { return g_net_deadline && (int32_t)(millis() - g_net_deadline) > 0; }
 
 // LILYGO T-A7670G R2 핀맵 (공식 utilities.h / ExternalGPS_A7670G_Only 기준)
 #define MODEM_TX          26
@@ -399,6 +449,10 @@ struct PingRec {
   uint16_t solar_mv;        // 태양광 전압(mV). 0xFFFF = 없음
   uint16_t brownouts;       // 지금까지 브라운아웃 리셋 누적 횟수(NVS)
   uint16_t vmin_tx_mv_prev; // 직전 송신 중 가장 낮았던 배터리 전압(mV, 20ms 표본). 0 = 없음
+  // ── v1.3.5 ── 끝의 빈자리(패딩 6바이트)에 넣었다. 크기 96 그대로라 파일 이름(v3)을 바꾸지 않는다.
+  //   v1.3.4 이전 기록은 pingRecInit 의 memset 으로 이 자리가 0 이라 「없음」으로 읽힌다.
+  uint16_t gnss_miss;       // 이 고정 전까지 GNSS 를 못 잡은 웨이크 수. 0 = 없음
+  uint8_t  gnss_fail;       // 마지막 실패 사유(1 NMEA 없음, 2 하늘 막힘, 3 시간 초과). 0 = 없음
 };
 static_assert(sizeof(PingRec) == 96, "PingRec 크기가 바뀌면 ffid_store.h 파일 이름과 STORE_MAX 근거를 함께 고친다");
 
@@ -418,6 +472,7 @@ void pingRecInit(PingRec &r) {
   r.cell_id_prev = 0;
   r.reg_s_prev = 0xFFFF; r.gnss_fix_s = 0xFFFF; r.solar_mv = 0xFFFF;
   r.brownouts = 0; r.vmin_tx_mv_prev = 0;
+  r.gnss_miss = 0; r.gnss_fail = 0;
 }
 #include "ffid_store.h"
 
@@ -438,6 +493,14 @@ RTC_NOINIT_ATTR uint8_t rtc_stage;
 RTC_NOINIT_ATTR uint32_t rtc_launch_keep;
 #define STAGE(n) (rtc_stage = (n))   // 전원을 새로 켰다(POWERON 이거나, 표시 없는 BROWNOUT)
 RTC_DATA_ATTR uint32_t rtc_launch_left_m = 0;   // 켠 직후 빠른 보고가 남은 분(v1.3.2)
+// ★v1.3.5 재부팅 고리 끊기: 사고 리셋(웨이크 중 브라운아웃, 태스크, RTC, 인터럽트 워치독, 패닉)이 잠들기 전에
+//   연달아 몇 번 났나. 2번 이상이면 「이어 보내기」로 바로 다시 송신하지 않고 백오프에 맡긴다.
+//   딥슬립에 들어갈 때마다 0 으로 돌린다. RTC_NOINIT 라 전원을 완전히 끊으면 쓰레기값이니 새로 켠 때도 0 으로 둔다.
+RTC_NOINIT_ATTR uint8_t rtc_crash_n;
+// ★v1.3.5 모뎀이 켜져 있을 수 있나. 모뎀을 켤 때 참, 끄기를 확인하면 거짓. 잠들 때 모뎀 끄기 판단에 쓴다.
+RTC_DATA_ATTR bool rtc_modem_maybe_on = false;
+bool g_modem_talked = false;   // 이번 웨이크에 모뎀이 AT 에 한 번이라도 답했나
+bool g_rail_on = false;        // 이번 웨이크에 IO12 레일이 켜져 있나(v1.3.5)
 
 // ── 리셋에도 살아야 하는 상태(v1.3 「순단 복구」) ──
 // 딥슬립 웨이크에서는 RTC 메모리가 남지만, 브라운아웃·패닉·보호회로 차단 뒤에는 RTC 가 지워질 수 있다.
@@ -460,11 +523,15 @@ struct PersistState {
   uint8_t  tier;                // 전압 계단(0 가득 … 4 바닥). 255 = 아직 없음
   uint8_t  month;               // 마지막으로 안 GPS UTC 월(1~12). 0 = 모름
   bool     anchor_ok, last_net_fail, last_stranded, tx_held;
+  // ── v1.3.5 ── GNSS 를 못 잡은 웨이크 수와 마지막 사유. 다음 고정 기록에 실어 보내고 0 으로 돌린다.
+  uint16_t gnss_miss;
+  uint8_t  gnss_fail_last;      // 1 NMEA 없음, 2 하늘 막힘, 3 시간 초과
 };
-static const uint32_t PERSIST_MAGIC = 0xFF130001;
+// ★v1.3.5: 칸을 더해 0xFF130001 → 0xFF130002. 옛 NVS 값은 한 번 버려진다(크기가 달라 persistLoad 가 거절).
+static const uint32_t PERSIST_MAGIC = 0xFF130002;
 RTC_DATA_ATTR PersistState st = { PERSIST_MAGIC, 0, 0, 0, 0, 0, 0, 0, 0.0f,
                                   INT16_MIN, INT16_MIN, 0xFFFF, 0, INT8_MIN, NS_NONE,
-                                  0, 0, 0, 255, 0, false, false, false, false };
+                                  0, 0, 0, 255, 0, false, false, false, false, 0, 0 };
 
 // 이번 부팅에서만 쓰는 값
 esp_reset_reason_t g_reset = ESP_RST_UNKNOWN;
@@ -473,6 +540,11 @@ bool     g_tx_interrupted   = false;   // 직전 웨이크가 송신 도중 끊�
 uint16_t g_brownouts        = 0;
 float    g_vcal_gain = VBAT_CAL_GAIN, g_vcal_off = VBAT_CAL_OFFSET_V;
 uint32_t g_gnss_fix_s = 0xFFFF;
+// 고른 고정 표본(v1.3.5 품질 기다리기). getFix 가 채운다.
+float    g_fix_hdop = -1.0f;
+uint8_t  g_fix_sats = 0;
+char     g_fix_ts[24] = "";
+uint8_t  g_gnss_fail_reason = 0;   // getFix 가 거짓을 돌려준 사유(1 NMEA 없음, 2 하늘 막힘, 3 시간 초과)
 
 // 두 좌표 거리(m), 하버사인
 double distM(double la1, double lo1, double la2, double lo2) {
@@ -674,6 +746,9 @@ String buildPingBody(const PingRec &r) {
   if (r.vmin_tx_mv_prev)          b += ",\"vmin_tx_prev\":" + String(r.vmin_tx_mv_prev / 1000.0f, 2);
   if (r.reset_reason)             b += ",\"reset_reason\":" + String(r.reset_reason);
   b += ",\"brownouts\":" + String(r.brownouts);
+  if (r.gnss_miss)                b += ",\"gnss_miss\":" + String(r.gnss_miss);   // v1.3.5
+  if (r.gnss_fail)                b += ",\"gnss_fail\":" + String(r.gnss_fail);
+  if (g_store_fail)               b += ",\"store_fail\":" + String(g_store_fail); // 보낼 때의 누적 값(NVS)
   if (rtc_iccid[0])               b += ",\"iccid\":\"" + String(rtc_iccid) + "\"";   // 보낼 때 꽂혀 있는 유심(도난 판정용)
   if (r.ts_fix[0]) { b += ",\"ts_fix\":\"" + String(r.ts_fix) + "\",\"ts\":\"" + String(r.ts_fix) + "\""; }
   b += "}";
@@ -710,6 +785,7 @@ void vmonStop() { g_vmon_run = false; }
 void modemPowerOn() {
   STAGE(3);
   pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH);
+  g_rail_on = true;
   // ★T-A7670 계열 RST는 HIGH=리셋 어서트(공식 utilities.h MODEM_RESET_LEVEL=HIGH). 유휴=LOW.
   //   (검수에서 잡은 v1.0 계승 버그: HIGH로 방치하면 모뎀이 리셋에 잡혀 testAT 전패)
   pinMode(MODEM_RST, OUTPUT);
@@ -722,22 +798,58 @@ void modemPowerOn() {
   digitalWrite(BOARD_PWRKEY, LOW);
   STAGE(4);
   modem_on = true;
+  rtc_modem_maybe_on = true;
+  wdtFeed();
 }
 
-// 모뎀을 명령으로 끈다(v1.3). AT+CPOF → 최소 3초 → AT 응답이 끊겼는지 확인(최대 5초).
-// 이 함수가 끝난 뒤에야 IO12 레일을 내린다(deepSleepFor).
-void modemShutdown() {
-  if (!modem_on) return;
+// PWRKEY 를 길게 눌러 모뎀을 끈다(v1.3.5). 누름 극성은 modemPowerOn 과 같다(HIGH = 누름).
+void modemPwrkeyLong() {
+  pinMode(BOARD_PWRKEY, OUTPUT);
+  digitalWrite(BOARD_PWRKEY, HIGH); delay(3000);
+  digitalWrite(BOARD_PWRKEY, LOW);
+  wdtFeed();
+}
+
+// 모뎀을 끄고, 꺼진 것을 확인했으면 true(v1.3.5). 이 함수가 끝난 뒤에야 IO12 레일을 판단한다(deepSleepFor).
+// 순서: AT 로 살아 있나 본다 → 살아 있으면 AT+CPOF, 최소 3초 기다린 뒤 최대 2초 더 AT 응답이 끊기는지 본다
+//   → 아직 답하거나, 이번 웨이크에 모뎀이 한 번도 답하지 않았으면(상태를 모름) PWRKEY 를 3초 길게 누른다
+//   → 다시 AT 를 본다. 끝까지 답하면 false(호출부가 레일을 끊는다).
+// ★v1.3.4 까지는 CPOF 뒤 응답이 남아도 그대로 레일을 살려 두고 잤다. GNSS_STANDBY 1 에서는 켜진 모뎀이 밤새 전류를 쓴다.
+bool modemShutdown() {
+  if (!modem_on && !rtc_modem_maybe_on) return true;
+  if (!modem_on) SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   uint32_t t0 = millis();
-  modem.poweroff();                       // AT+CPOF
-  delay(MODEM_OFF_MIN_MS);
-  bool still = true;
-  while (millis() - t0 < MODEM_OFF_MAX_MS) {
-    if (!modem.testAT(300)) { still = false; break; }
-    delay(200);
+  bool alive = modem.testAT(1000);
+  if (alive) {
+    modem.poweroff();                       // AT+CPOF
+    delay(MODEM_OFF_MIN_MS);
+    wdtFeed();
+    uint32_t t1 = millis();
+    while (millis() - t1 < 2000) {
+      alive = modem.testAT(300);
+      if (!alive) break;
+      delay(200);
+    }
   }
-  Serial.printf("[FF] 모뎀 전원 차단 %s (%lums)\n", still ? "응답 남음(시간 초과)" : "확인", (unsigned long)(millis() - t0));
+  if (alive || !g_modem_talked) {
+    Serial.printf("[FF] 모뎀 PWRKEY 길게 누름(%s)\n", alive ? "CPOF 뒤에도 응답" : "이번 웨이크 응답 없음, 상태 모름");
+    bool blind = !alive;
+    modemPwrkeyLong();
+    delay(3000);
+    wdtFeed();
+    alive = modem.testAT(500);
+    // ★꺼져 있던 모뎀을 눌렀다면 오히려 켜졌을 수 있다. 켜지는 모뎀은 몇 초 뒤에야 AT 에 답하므로
+    //   상태를 모르고 눌렀을 때는 9초 더 지켜본다(지시 원안은 3초 뒤 한 번. 켜 버린 모뎀을 놓치지 않으려고 늘렸다).
+    if (blind) {
+      uint32_t t2 = millis();
+      while (!alive && millis() - t2 < 9000) { delay(500); alive = modem.testAT(300); }
+      wdtFeed();
+    }
+  }
+  Serial.printf("[FF] 모뎀 전원 차단 %s (%lums)\n", alive ? "실패(응답 남음)" : "확인", (unsigned long)(millis() - t0));
   modem_on = false;
+  rtc_modem_maybe_on = alive;
+  return !alive;
 }
 
 // AT+CPIN? 을 직접 읽는다: TinyGSM getSimStatus 는 「SIM PIN」과 「SIM PUK」을 같은 값으로 돌려준다.
@@ -839,20 +951,35 @@ bool pdpConnect() {
   uint32_t r0 = millis();
   bool ready = false;
   while (millis() - r0 < 30000UL) {
+    wdtFeed();
     modem.sendAT(GF("+CIPMODE=0"));
     if (modem.waitResponse(2000UL) == 1) { ready = true; break; }
     delay(1000);
   }
   Serial.printf("[FF] 모뎀 IP 스택 %s (%lums)\n", ready ? "준비" : "준비 안 됨", (unsigned long)(millis() - r0));
-  if (modem.gprsConnect(APN, GPRS_USER, GPRS_PASS)) return true;
+  wdtFeed();
+  if (!ready) {
+    // ★v1.3.5: 준비 안 된 스택에 gprsConnect(CIPCCFG 포함)를 보내면 모뎀이 재부팅했다(v1.3.4 실측).
+    //   이미 열려 있으면 그대로 쓰고, 아니면 이번 웨이크는 연결을 시도하지 않는다.
+    modem.sendAT(GF("+NETOPEN?"));
+    if (modem.waitResponse(3000UL, GF("+NETOPEN: 1")) == 1) { modem.waitResponse(); return true; }
+    modem.waitResponse();
+    Serial.println("[FF] IP 스택 준비 안 됨 → 연결 시도 생략");
+    return false;
+  }
+  bool ok = modem.gprsConnect(APN, GPRS_USER, GPRS_PASS);
+  wdtFeed();
+  if (ok) return true;
   Serial.println("[FF] gprsConnect 거짓 -> NETOPEN 직접 확인");
   modem.sendAT(GF("+NETOPEN?"));
   if (modem.waitResponse(3000UL, GF("+NETOPEN: 1")) == 1) { modem.waitResponse(); return true; }
   modem.waitResponse();
   modem.sendAT(GF("+NETOPEN"));
-  int r = modem.waitResponse(75000UL, GF("+NETOPEN: 0"), GF("+NETOPEN: 1"));
+  // ★v1.3.5: 그냥 ERROR 도 끝 응답으로 받는다. 안 받으면 75초를 다 기다렸다.
+  int r = modem.waitResponse(75000UL, GF("+NETOPEN: 0"), GF("+NETOPEN: 1"), GFP(GSM_ERROR));
+  wdtFeed();
   if (r == 1) return true;
-  return modem.isGprsConnected();
+  return modem.isGprsConnected();   // ERROR 나 시간 초과면 실제 연결 여부로 판단
 }
 #endif
 
@@ -867,7 +994,7 @@ bool netConnect() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("[FF] Wi-Fi 접속 시도 %s\n", WIFI_SSID);
   uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000) delay(200);
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000) { delay(200); wdtFeed(); }
   st.reg_s_prev = (millis() - t0) / 1000;
   if (WiFi.status() != WL_CONNECTED) {
     // ★2.4 GHz 인지 먼저 본다. ESP32 는 5 GHz 를 아예 잡지 못하고, 휴대폰 핫스팟은
@@ -897,7 +1024,10 @@ bool netConnect() {
     st.net_stage_prev = NS_NO_AT;
     return false;
   }
+  g_modem_talked = true;   // v1.3.5: 모뎀 끄기 판단용
+  wdtFeed();
   if (!simReady()) { Serial.println("[FF] 유심 준비 실패 → 버퍼 보존, 슬립"); return false; }
+  wdtFeed();
   // ICCID: 도난 판정용(서버). 바뀌었을 때만 NVS 에 적는다.
   {
     String cc = modem.getSimCCID();
@@ -922,6 +1052,7 @@ bool netConnect() {
   uint32_t t0 = millis();
   bool reg = modem.waitForNetwork(waitMs);
   st.reg_s_prev = (millis() - t0) / 1000;
+  wdtFeed();
   if (!reg) {
     Serial.printf("[FF] 망 등록 실패(%us) → 버퍼 보존, 슬립\n", (unsigned)st.reg_s_prev);
     st.net_stage_prev = NS_REG;
@@ -932,6 +1063,7 @@ bool netConnect() {
   for (uint8_t k = 0; k < SIG_SAMPLES; k++) {
     int rsrp, rsrq, rssi; uint32_t cell;
     readSignal(rsrp, rsrq, rssi, cell);
+    wdtFeed();
     if (k == 0 || rsrp > best) {
       best = rsrp;
       st.rsrp_prev = (int16_t)rsrp;
@@ -985,51 +1117,119 @@ int satsInView() {
   return total;
 }
 
+void gpsIso8601(char* buf, size_t n);
+
+// ── L76K 설정 명령(v1.3.5) ──
+// $<본문>*<XOR 체크섬>\r\n 으로 보낸다. 체크섬은 $ 와 * 사이 글자의 XOR(NMEA 규칙).
+void l76kSend(const char* body) {
+  uint8_t cs = 0;
+  for (const char* p = body; *p; p++) cs ^= (uint8_t)*p;
+  char tail[8];
+  snprintf(tail, sizeof(tail), "*%02X\r\n", cs);
+  SerialGPS.print('$'); SerialGPS.print(body); SerialGPS.print(tail);
+  SerialGPS.flush();
+  delay(120);
+}
+// cold = 레일을 막 켰다(냉시동). 그때만 위성계를 GPS+BDS+GLONASS(PCAS04,7)로 맞춘다.
+// 문장은 늘 줄인다: GGA, RMC 매 초, GSV 3초마다(하늘 확인용), 나머지는 끈다. UART 에 읽을 글자가 줄어든다.
+// ★저장 명령(PCAS00)은 보내지 않는다. 칩이 전원을 잃으면 기본으로 돌아가므로 매 웨이크 다시 보낸다.
+void l76kConfig(bool cold) {
+  if (cold) {   // 막 켠 칩이 명령을 받을 수 있게 첫 글자가 나올 때까지 최대 1초 기다린다
+    uint32_t t0 = millis();
+    while (!SerialGPS.available() && millis() - t0 < 1000) delay(20);
+    l76kSend("PCAS04,7");
+  }
+  l76kSend("PCAS03,1,0,0,3,1,0,0,0,0,0,,,0,0");
+}
+
 // L76K GPS(Serial2)에서 NMEA를 읽어 위경도 취득. 성공 시 true.
 // ★모뎀 AT가 아니라 L76K UART다. 실내에서는 대부분 fix 안 됨 → 창가/야외에서 확인.
 // ★GPS 전원은 BOARD_POWERON 레일에 걸려 있어 fix 전에 POWERON을 먼저 HIGH로 올린다.
 // ★v1.3: GPS_SKY_CHECK_MS 가 지나도 NMEA 가 없거나 보이는 위성이 GPS_SKY_MAX_POOR 개 이하면 곧바로 포기한다.
-//   걸린 시간은 g_gnss_fix_s 에 남는다.
+//   첫 고정까지 걸린 시간은 g_gnss_fix_s 에 남는다.
+// ★v1.3.5 품질 기다리기: 첫 고정에서 HDOP 2.0 이하이고 위성 6개 이상이면 바로 끝낸다. 아니면 최대 15초 더
+//   보면서 HDOP 가 가장 낮은 표본을 고른다(전체 timeoutMs 를 넘지 않는다). 고른 표본의 위치, HDOP, 위성 수,
+//   시각을 g_fix_* 에 남긴다. 실패하면 g_gnss_fail_reason(1 NMEA 없음, 2 하늘 막힘, 3 시간 초과)을 남긴다.
+const float    FIX_GOOD_HDOP  = 2.0f;
+const uint8_t  FIX_GOOD_SATS  = 6;
+const uint32_t FIX_IMPROVE_MS = 15000;
 bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
   STAGE(2);
   pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH);  // GPS 레일 확보(모뎀보다 먼저 필요)
+  g_rail_on = true;
   pinMode(BOARD_GPS_WAKEUP_PIN, OUTPUT); digitalWrite(BOARD_GPS_WAKEUP_PIN, HIGH);  // 대기였으면 깨운다
   SerialGPS.begin(GPS_BAUDRATE, SERIAL_8N1, BOARD_GPS_RX_PIN, BOARD_GPS_TX_PIN);
+  l76kConfig(!(GNSS_STANDBY && rtc_gnss_kept));
   uint32_t start = millis();
   bool skyChecked = false;
   g_gnss_fix_s = 0xFFFF;
+  g_gnss_fail_reason = 0;
+  g_fix_hdop = -1.0f; g_fix_sats = 0; g_fix_ts[0] = 0;
+  bool have = false;            // 첫 고정을 잡았나
+  float bestH = 999.0f;
+  uint32_t gateEnd = 0;
   while (millis() - start < timeoutMs) {
+    wdtFeed();
     while (SerialGPS.available()) gps.encode(SerialGPS.read());
     bool locOk  = gps.location.isValid() && gps.location.age() < 3000 && gps.satellites.value() >= 4;
     bool timeOk = gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2025;
-    if (locOk && timeOk) {           // RMC(날짜)는 같은 에포크에 오므로 지연 최대 ~1초.
-      lat = gps.location.lat();      // 날짜 검증 없이 리턴하면 ts_fix가 비어 서버가 server_recv로
-      lon = gps.location.lng();      // 강등 — 버퍼 지연 레코드는 관측시각이 통째로 틀어짐(검수 발견)
-      g_gnss_fix_s = (millis() - start) / 1000;
+    // RMC(날짜)는 같은 에포크에 오므로 지연 최대 ~1초. 날짜 검증 없이 고르면 ts_fix 가 비어 서버가
+    // server_recv 로 강등한다. 버퍼 지연 레코드는 관측 시각이 통째로 틀어진다(검수 발견).
+    if (locOk && timeOk && (!have || gps.location.isUpdated())) {
+      float h = gps.hdop.isValid() ? (float)gps.hdop.hdop() : 99.0f;
+      uint8_t sv = (uint8_t)(gps.satellites.value() > 255 ? 255 : gps.satellites.value());
+      double la = gps.location.lat(), lo = gps.location.lng();   // 읽으면 isUpdated 가 풀린다
+      if (!have) {
+        have = true;
+        g_gnss_fix_s = (millis() - start) / 1000;
+        gateEnd = millis() + FIX_IMPROVE_MS;
+      }
+      if (h < bestH) {
+        bestH = h;
+        lat = la; lon = lo;
+        g_fix_hdop = gps.hdop.isValid() ? h : -1.0f;
+        g_fix_sats = sv;
+        gpsIso8601(g_fix_ts, sizeof(g_fix_ts));
+      }
+      if (h <= FIX_GOOD_HDOP && sv >= FIX_GOOD_SATS) {
+        lat = la; lon = lo; g_fix_hdop = h; g_fix_sats = sv;
+        gpsIso8601(g_fix_ts, sizeof(g_fix_ts));
+        return true;
+      }
+    }
+    if (have && (int32_t)(millis() - gateEnd) >= 0) {
+      Serial.printf("[FF] GPS 품질 기다리기 끝: 고른 HDOP %.1f 위성 %u\n", g_fix_hdop, (unsigned)g_fix_sats);
       return true;
     }
-    if (!skyChecked && millis() - start >= GPS_SKY_CHECK_MS) {
+    if (!have && !skyChecked && millis() - start >= GPS_SKY_CHECK_MS) {
       skyChecked = true;
       int inView = satsInView();
       if (gps.charsProcessed() == 0) {
         Serial.println("[FF] GPS 20초 동안 NMEA 없음(전원·배선 확인) → 포기");
+        g_gnss_fail_reason = 1;
         return false;
       }
       if (inView >= 0 && inView <= GPS_SKY_MAX_POOR) {
         Serial.printf("[FF] GPS 20초에 보이는 위성 %d개 → 하늘이 막힌 자리로 보고 포기\n", inView);
+        g_gnss_fail_reason = 2;
         return false;
       }
     }
     delay(10);
   }
+  if (have) return true;   // 품질 기다리는 중에 전체 시간이 끝났다. 고른 표본을 쓴다
   // 타임아웃 폴백: 위치만이라도 유효하면 관측은 살린다(ts_fix만 결측 → 서버가 server_recv 강등)
   if (gps.location.isValid() && gps.location.age() < 3000 && gps.satellites.value() >= 4) {
     lat = gps.location.lat(); lon = gps.location.lng();
     g_gnss_fix_s = (millis() - start) / 1000;
+    g_fix_hdop = gps.hdop.isValid() ? (float)gps.hdop.hdop() : -1.0f;
+    g_fix_sats = (uint8_t)(gps.satellites.value() > 255 ? 255 : gps.satellites.value());
+    gpsIso8601(g_fix_ts, sizeof(g_fix_ts));   // 시각이 무효면 빈 문자열
     return true;
   }
   // 진단: chars=0이면 GPS 무전원/배선(POWERON 레일 전제 확인 — 벤치 1차 관문), >0이면 단순 미픽스
   Serial.printf("[FF] GPS fix 실패: NMEA chars=%lu\n", (unsigned long)gps.charsProcessed());
+  g_gnss_fail_reason = gps.charsProcessed() == 0 ? 1 : 3;
   return false;
 }
 
@@ -1061,7 +1261,8 @@ bool postBody(const String &body) {
   int status = http.responseStatusCode();
   if (status > 0) http.responseBody();   // 유효 응답만 소진(오류코드면 재차 30초 대기 회피)
   Serial.print("[FF] 서버 응답 "); Serial.println(status);
-  if (status >= 200 && status < 300) return true;
+  wdtFeed();
+  if (status >= 200 && status < 300) { http.stop(); return true; }   // v1.3.5: 성공 뒤에도 연결을 닫는다(keep-alive 소켓을 남기지 않게)
   http.stop();
   return false;
 }
@@ -1076,6 +1277,11 @@ int flushStore() {
   uint32_t bmax = g_weak_signal ? BATCH_WEAK : BATCH_MAX;
   if (g_weak_signal && BATCH_POST) Serial.printf("[FF] 약신호 → 한 번에 %lu건\n", (unsigned long)bmax);
   while (storeCount() > 0) {
+    wdtFeed();
+    if (budgetOver()) {   // v1.3.5 웨이크 시간 예산
+      Serial.printf("[FF] 망 단계 시간 예산(%lus) 초과 → 나머지는 다음 웨이크\n", (unsigned long)(WAKE_NET_BUDGET_MS / 1000));
+      break;
+    }
     if (sent >= MAX_RECS_PER_WAKE || posts >= MAX_POSTS_PER_WAKE) {
       Serial.printf("[FF] 웨이크당 전송 상한 도달(%lu건·%lu회) → 나머지는 다음 웨이크\n", (unsigned long)sent, (unsigned long)posts);
       break;
@@ -1101,11 +1307,13 @@ int flushStore() {
       if (t) {
         Serial.printf("[FF] 재시도 %u/%u (%lums 뒤)\n", t + 1, POST_TRIES, (unsigned long)POST_RETRY_GAP_MS);
         delay(POST_RETRY_GAP_MS);
-        if (!netAlive()) break;
+        wdtFeed();
+        if (budgetOver() || !netAlive()) break;
       }
       Serial.printf("[FF] POST %lu건 (%u바이트)\n", (unsigned long)got, body.length());
       ok = postBody(body);
       posts++;
+      wdtFeed();
     }
     if (!ok) { st.net_stage_prev = sent ? NS_POSTED : NS_POST_FAIL; break; }   // 실패: 다음 주기에 재시도
     storeDropFront(got);
@@ -1123,17 +1331,22 @@ int flushStore() {
 // 지정 분(minutes)만큼 딥슬립.
 // GNSS_STANDBY 0: 모뎀을 명령으로 끈 뒤(3~5초 확인) 모뎀·L76K 레일을 끊고(POWERON LOW) GPIO를 홀드한다.
 // GNSS_STANDBY 1: 모뎀만 명령으로 끄고 레일은 살려 두며, L76K 는 WAKEUP LOW 로 대기에 둔다(온시동).
-void deepSleepFor(uint32_t minutes) {
+// ★v1.3.5: GNSS_STANDBY 1 이라도 다음 셋이면 레일을 끊는다(IO12 LOW 홀드, 다음 웨이크 냉시동).
+//   ① 모뎀 끄기를 확인하지 못했다(켜진 모뎀이 밤새 전류를 쓰지 않게) ② cutRail(저전압 park)
+//   ③ 이번 웨이크에 레일을 켜지 않았다(잠들 때 새로 켜면 빈 축전기가 LDO 입력을 흔든다).
+void deepSleepFor(uint32_t minutes, bool cutRail = false) {
   STAGE(7);
+  bool modemOff = true;
 #if USE_WIFI
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);   // 슬립 전 라디오를 끈다. 안 끄면 딥슬립 진입이 늦고 전류가 남는다
 #else
-  modemShutdown();       // ★레일(IO12)을 내리기 전에 반드시 먼저(v1.3)
+  modemOff = modemShutdown();   // ★레일(IO12)을 판단하기 전에 반드시 먼저(v1.3)
 #endif
   vmonStop();
   st.last_sleep_m = minutes;
   persistSave();         // 리셋에도 남게(순단 복구)
+  wdtFeed();
   // 딥슬립 중 일반 GPIO는 플로팅 → GPS_WAKEUP이 HIGH로 남으면 L76K가 슬립 내내 켜져
   // 배터리를 지배할 수 있다(공식 DeepSleep 예제 방식으로 홀드). 절감폭은 실측 전.
   pinMode(BOARD_GPS_WAKEUP_PIN, OUTPUT); digitalWrite(BOARD_GPS_WAKEUP_PIN, LOW);
@@ -1143,17 +1356,23 @@ void deepSleepFor(uint32_t minutes) {
   pinMode(BOARD_PWRKEY, OUTPUT);         digitalWrite(BOARD_PWRKEY, LOW);   // 레일이 살아 있을 때 떠 있는 PWRKEY 가 모뎀을 켜지 않게
   gpio_hold_en((gpio_num_t)BOARD_PWRKEY);
   pinMode(BOARD_POWERON, OUTPUT);
-#if GNSS_STANDBY
-  digitalWrite(BOARD_POWERON, HIGH);     // L76K 대기를 위해 레일 유지(모뎀은 CPOF 로 꺼짐, 누설 약 20 µA)
-  rtc_gnss_kept = true;
-#else
-  digitalWrite(BOARD_POWERON, LOW);      // 레일째 차단 → 다음 웨이크 냉시동
-  rtc_gnss_kept = false;
-#endif
+  bool keep = GNSS_STANDBY && modemOff && !cutRail && g_rail_on;
+  if (keep) {
+    digitalWrite(BOARD_POWERON, HIGH);   // L76K 대기를 위해 레일 유지(모뎀은 꺼짐 확인, 누설 약 20 µA)
+    rtc_gnss_kept = true;
+  } else {
+    digitalWrite(BOARD_POWERON, LOW);    // 레일째 차단 → 다음 웨이크 냉시동
+    rtc_gnss_kept = false;
+    rtc_modem_maybe_on = false;          // 레일이 끊기면 모뎀도 꺼진다
+    if (GNSS_STANDBY) Serial.printf("[FF] 레일 차단하고 잠(%s)\n", !modemOff ? "모뎀 끄기 확인 못 함" : cutRail ? "저전압 park" : "이번 웨이크 레일 꺼짐");
+  }
   gpio_hold_en((gpio_num_t)BOARD_POWERON);
   gpio_deep_sleep_hold_en();
   inaFinishWake();
   esp_sleep_enable_timer_wakeup((uint64_t)minutes * 60ULL * 1000000ULL);
+  rtc_crash_n = 0;       // v1.3.5: 정상으로 잠들면 사고 리셋 횟수를 지운다
+  Serial.flush();
+  wdtStop();             // ★v1.3.5: 워치독 둘을 끈다(안 끄면 자는 중에 RTC 워치독이 리셋한다)
   STAGE(8);
   esp_deep_sleep_start();
 }
@@ -1163,6 +1382,7 @@ uint32_t g_next_sleep_m = SLEEP_MINUTES;
 void deepSleep() { deepSleepFor(g_next_sleep_m); }
 
 void setup() {
+  wdtStart();   // v1.3.5: 맨 먼저. 태스크 워치독 240초, RTC 워치독 900초(웨이크 전체 상한)
   // 웨이크 직후 홀드 해제(없으면 이후 digitalWrite가 홀드에 막혀 무효)
   gpio_deep_sleep_hold_dis();
   gpio_hold_dis((gpio_num_t)BOARD_GPS_WAKEUP_PIN);
@@ -1170,7 +1390,12 @@ void setup() {
   gpio_hold_dis((gpio_num_t)BOARD_PWRKEY);
 #if GNSS_STANDBY
   // 홀드를 풀기 전에 출력 HIGH 로 맞춰 둔다. 안 하면 푸는 순간 핀이 입력(풀다운)으로 돌아가 레일이 잠깐 꺼진다.
-  if (esp_reset_reason() == ESP_RST_DEEPSLEEP) { pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH); }
+  // ★v1.3.5: 레일을 켠 채 잤을 때(rtc_gnss_kept)만. 레일을 끊고 잤으면(저전압 park, 모뎀 끄기 실패) 꺼진 채로 두어
+  //   배터리 전압을 레일 켜기 전에 잰다(저전압 park 판정). 레일은 getFix 나 모뎀 켜기에서 켠다.
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP && rtc_gnss_kept) {
+    pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH);
+    g_rail_on = true;
+  }
 #endif
   gpio_hold_dis((gpio_num_t)BOARD_POWERON);
   setCpuFrequencyMhz(CPU_MHZ);
@@ -1190,6 +1415,7 @@ void setup() {
   if (!PROD_CA_PEM[0]) Serial.println("[FF] 주의: PROD_CA_PEM 이 비었다. 서버 인증서를 검증하지 않는다(README 보안 절)");
 #endif
   storeBegin();
+  wdtFeed();
 
   // ── 리셋 사유와 순단 복구(v1.3) ──
   // 리셋 사유 로깅(재QA #5): 브라운아웃(ESP_RST_BROWNOUT=9 · IDF 5.1 헤더 확인 2026-10-04)이 반복되면 저전압 가드·전원설계 재검토 신호
@@ -1210,6 +1436,15 @@ void setup() {
     prefs.end();
   }
   STAGE(1);
+  // ── 재부팅 고리 끊기(v1.3.5) ── 웨이크 중 브라운아웃, 워치독, 패닉이면 사고 리셋으로 센다.
+  //   v1.3.4 에서 웨이크 때 레일을 켜는 순간의 브라운아웃을 고쳐서 평상 웨이크는 사유 8(딥슬립)이다.
+  {
+    bool crashy = (g_reset == ESP_RST_BROWNOUT && !g_cold) || g_reset == ESP_RST_TASK_WDT || g_reset == ESP_RST_WDT ||
+                  g_reset == ESP_RST_PANIC || g_reset == ESP_RST_INT_WDT;
+    if (g_cold || rtc_crash_n > 20) rtc_crash_n = 0;   // RTC_NOINIT 쓰레기값 거르기
+    if (crashy) rtc_crash_n++;
+    if (rtc_crash_n) Serial.printf("[FF] 잠들기 전 사고 리셋 %u번째\n", (unsigned)rtc_crash_n);
+  }
   if (g_cold && g_reset == ESP_RST_BROWNOUT) Serial.println("[FF] 켤 때 전압 흔들림(BROWNOUT) → 전원 투입으로 본다");
   Serial.printf("[FF] reset_reason=%d (1=전원 3=SW 4=panic 6=태스크WDT 8=deepsleep 9=BROWNOUT)\n", (int)g_reset);
   prefs.begin("ffid", false);
@@ -1255,7 +1490,7 @@ void setup() {
     uint32_t parkM = ADAPTIVE_INTERVAL ? 720 : SLEEP_MINUTES * PARK_MULT;
     Serial.printf("[FF] 저전압 park %.2fV<%.2fV → %lu분 슬립\n", vbat0, BATT_PARK_V, (unsigned long)parkM);
     nvsSetBool("lowbatt", true);           // 되살아남 판정용(보호회로 차단으로 RTC가 지워져도 남는다)
-    deepSleepFor(parkM);
+    deepSleepFor(parkM, true);   // v1.3.5: 레일을 끊고 잔다(IO12 LOW 홀드). 다음 웨이크는 레일 켜기 전에 전압을 잰다
   }
   g_next_sleep_m = launchIntervalM(chooseIntervalM(vbat0, false, false), vbat0);
 
@@ -1264,7 +1499,15 @@ void setup() {
   // ── 이어 보내기(순단 복구, v1.3) ──
   // 송신 도중 리셋이면 그 웨이크의 고정은 이미 저장돼 있다. 냉시동 GNSS 를 다시 돌리지 않고
   // (브라운아웃 → 재부팅 → 냉시동 → 또 송신의 고리를 끊는다) 올린 문턱으로 남은 것만 보낸다.
-  bool resumeTx = g_tx_interrupted && storeCount() > 0;
+  // ★v1.3.5: 사고 리셋이 잠들기 전에 2번 이상이면 바로 다시 보내지 않는다(송신 → 리셋 → 송신 고리).
+  //   접속 실패 1회로 쳐서 백오프(60분부터)에 맡긴다. GNSS 기록은 그대로 남긴다.
+  bool resumeTx = g_tx_interrupted && storeCount() > 0 && rtc_crash_n < 2;
+  if (rtc_crash_n >= 2) {
+    st.last_net_fail = true;
+    if (st.net_fails < 255) st.net_fails++;
+    st.min_since_try = 0;
+    Serial.printf("[FF] 사고 리셋 %u번 연속 → 바로 다시 보내지 않고 백오프\n", (unsigned)rtc_crash_n);
+  }
 
   // ① GPS fix 먼저(망 없어도 관측은 남긴다 — store-and-forward의 요점)
   double lat = 0, lon = 0;
@@ -1280,7 +1523,12 @@ void setup() {
                     st.last_sleep_m <= GNSS_WARM_MAX_MIN ? "예" : "아니오");
     fixed = getFix(lat, lon, gpsTimeout);
     if (fixed) { st.gps_fails = 0; st.gps_short_n = 0; }
-    else if (st.gps_fails < 255) st.gps_fails++;
+    else {
+      if (st.gps_fails < 255) st.gps_fails++;
+      if (st.gnss_miss < 65535) st.gnss_miss++;   // v1.3.5: 다음 고정 기록에 실어 보낸다
+      st.gnss_fail_last = g_gnss_fail_reason;
+    }
+    wdtFeed();
   } else {
     Serial.println("[FF] GNSS 생략(이어 보내기)");
   }
@@ -1290,13 +1538,15 @@ void setup() {
     pingRecInit(r);
     r.lat = lat; r.lon = lon;
     r.batt = readBatteryV();
-    r.hdop = gps.hdop.isValid() ? (float)gps.hdop.hdop() : -1.0f;
+    r.hdop = g_fix_hdop;   // v1.3.5: 품질 기다리기에서 고른 표본의 값
     r.seq  = nextSeq();
     r.wake_mah_prev  = rtc_prev_wake_mah;
     r.wake_s_prev    = rtc_prev_wake_s;
     r.i_peak_ma_prev = rtc_prev_i_peak;
-    gpsIso8601(r.ts_fix, sizeof(r.ts_fix));
-    r.sats            = (uint8_t)(gps.satellites.value() > 255 ? 255 : gps.satellites.value());
+    strncpy(r.ts_fix, g_fix_ts, sizeof(r.ts_fix) - 1); r.ts_fix[sizeof(r.ts_fix) - 1] = 0;   // 고른 표본의 시각
+    r.sats            = g_fix_sats;
+    r.gnss_miss       = st.gnss_miss;        // v1.3.5: 이 고정 전까지 못 잡은 웨이크 수
+    r.gnss_fail       = st.gnss_miss ? st.gnss_fail_last : 0;
     r.gnss_fix_s      = (uint16_t)(g_gnss_fix_s > 0xFFFE ? 0xFFFF : g_gnss_fix_s);
     r.solar_mv        = readSolarMv();
     r.reset_reason    = (uint8_t)g_reset;
@@ -1344,6 +1594,7 @@ void setup() {
     r.interval_m = (uint16_t)g_next_sleep_m;
 
     storePush(r);
+    st.gnss_miss = 0; st.gnss_fail_last = 0;   // 기록에 실었으니 지운다
     st.last_stranded = (f & F_STRANDED);
     Serial.printf("[FF] fix seq=%lu lat=%.6f lon=%.6f hdop=%.1f sats=%u fix=%us batt=%.2fV solar=%umV flags=0x%02X next=%lum buf=%u\n",
                   (unsigned long)r.seq, lat, lon, r.hdop, (unsigned)r.sats, (unsigned)r.gnss_fix_s, r.batt,
@@ -1384,6 +1635,8 @@ void setup() {
   }
   st.min_since_try = 0;
   nvsSetBool("txing", true);       // 여기서 리셋되면 다음 부팅이 「송신 중 끊김」으로 안다
+  g_net_deadline = millis() + WAKE_NET_BUDGET_MS;   // v1.3.5: 망 단계 시간 예산(모뎀 켜기부터)
+  if (!g_net_deadline) g_net_deadline = 1;
   vmonStart();
   if (!netConnect()) {
     st.last_net_fail = true;

@@ -26,10 +26,13 @@
  * 플래시 마모: 쓰기는 웨이크당 레코드 한 줄 + 보낸 뒤 head 4바이트. LittleFS 가 마모를 고르게
  *   나눈다. 60분 간격이면 수명에 여유가 크다(벤치에서 확인 전에는 수치를 주장하지 않는다).
  *
+ * v1.3.5: 마운트 실패에 자동 포맷하지 않는다(storeBegin). 기록 추가에서 파일을 못 열면 NVS "st_fail" 에 센다.
+ *
  * 이 헤더는 스케치에서 PingRec·pingRecInit() 과 F_* 를 정의한 뒤에 include 한다.
  */
 #pragma once
 #include <LittleFS.h>
+#include <Preferences.h>
 
 #ifndef STORE_MAX
 // ★v1.3: 1,200 → 5,000건. 근거(2026-09-28 확인):
@@ -58,6 +61,7 @@ static const char* STORE_V2_TMP  = "/ffq_v2.tmp";
 
 static bool     g_store_ok  = false;
 static uint32_t g_store_cap = STORE_MAX;   // 실제 파일 영역 크기로 줄인 상한(storeBegin 에서 정한다)
+static uint16_t g_store_fail = 0;          // 기록 추가에서 파일을 열지 못한 누적 횟수(NVS "st_fail", v1.3.5). 0 이 아니면 보고에 싣는다
 
 // v1.2 레코드 배치(72바이트). 옮겨 적기에만 쓴다. ★이 배치를 바꾸지 않는다.
 struct PingRecV2 {
@@ -209,9 +213,23 @@ static void storeMigrateV2() {
 }
 
 // 부팅 때 한 번. 파일 끝 조각(추가 중 전원 차단)을 잘라내고, 상한을 영역 크기에 맞추고, 옛 파일을 옮긴다.
+// ★v1.3.5: begin(true) 는 마운트에 한 번만 실패해도 영역을 포맷해 보내지 않은 기록을 통째로 지웠다.
+//   이제 포맷 없이 두 번 시도하고, 한 번도 마운트에 성공한 적이 없는 기기(NVS "fs_ok" 없음)일 때만 포맷한다.
+//   한 번이라도 성공한 적이 있으면 실패해도 포맷하지 않고 이번 웨이크를 저장 없이 진행한다(다음 웨이크에 다시 시도).
 bool storeBegin() {
-  g_store_ok = LittleFS.begin(true);   // 첫 부팅이면 포맷
-  if (!g_store_ok) { Serial.println("[FF] LittleFS 마운트 실패 — 이번 웨이크는 저장 없이 진행"); return false; }
+  Preferences p;
+  p.begin("ffid", false);
+  bool everOk = p.getBool("fs_ok", false);
+  g_store_fail = p.getUShort("st_fail", 0);
+  g_store_ok = LittleFS.begin(false);
+  if (!g_store_ok) { delay(50); g_store_ok = LittleFS.begin(false); }
+  if (!g_store_ok && !everOk) {
+    Serial.println("[FF] LittleFS 첫 마운트 실패 → 처음 쓰는 기기로 보고 포맷");
+    g_store_ok = LittleFS.begin(true);
+  }
+  if (g_store_ok && !everOk) p.putBool("fs_ok", true);
+  p.end();
+  if (!g_store_ok) { Serial.println("[FF] LittleFS 마운트 실패, 포맷하지 않고 이번 웨이크는 저장 없이 진행"); return false; }
   // 상한: 정리 때 원본과 임시 파일이 함께 있으므로 (영역 − 여유 64 KB) ÷ (2 × 레코드) − COMPACT_AT.
   {
     size_t total = LittleFS.totalBytes();
@@ -250,7 +268,13 @@ void storePush(const PingRec &r) {
   if (storeHead() >= COMPACT_AT) storeCompact();
   if (storeCount() >= g_store_cap) storeThin();
   File f = LittleFS.open(STORE_FILE, "a");
-  if (!f) { Serial.println("[FF] 저장소 쓰기 실패"); return; }
+  if (!f) {
+    Serial.println("[FF] 저장소 쓰기 실패");
+    if (g_store_fail < 65535) g_store_fail++;   // v1.3.5: NVS 에 세어 보고에 싣는다
+    Preferences p;
+    p.begin("ffid", false); p.putUShort("st_fail", g_store_fail); p.end();
+    return;
+  }
   f.write((const uint8_t*)&r, sizeof(r));
   f.close();
 }
