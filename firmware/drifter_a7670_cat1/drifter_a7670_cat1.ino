@@ -47,7 +47,7 @@
  *   LittleFS 자동 포맷 막기, L76K 설정 명령, 고정 품질 기다리기, GNSS 실패 횟수 싣기. 자세한 것은 CHANGELOG.
  */
 
-#define FW_VERSION "1.3.5"
+#define FW_VERSION "1.3.6"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -206,6 +206,12 @@ const float INA_SHUNT_OHM = 0.1f;
 
 // 성능 최적화(2026-09-27)
 const uint32_t CPU_MHZ = 80;                 // 240→80MHz. GPS 대기 동안 칩 소모를 줄인다(Wi-Fi·모뎀 UART 는 80MHz 에서 동작)
+// v1.3.6: 켠 직후(전원 투입) 첫 회차만 위치를 이만큼 기다린다. 칩에 궤도 정보가 없어 하늘이 좁은 자리(창가)에서는
+//   3분 안에 못 잡고 회차를 통째로 버렸다(1호기 2026-11-02 오후, 위치 못 잡은 웨이크 20번). 한 번 잡으면 다음부터 수 초.
+const uint32_t GPS_FIRST_FIX_TIMEOUT_MS = 600000;
+// v1.3.6: 위치를 못 잡았고 보낼 기록도 없을 때 「살아 있음」(kind:"hb")을 보낸다. 켠 직후 첫 회차와,
+//   마지막 성공 전송 뒤 이만큼 지났을 때만(모뎀을 켜는 전기를 아끼려고).
+const uint32_t HB_EVERY_MIN = 60;
 const uint32_t GPS_SHORT_TIMEOUT_MS = 60000; // GPS 가 연속 실패하면(숲 그늘 등) 이만큼만 기다린다
 const uint8_t  GPS_FAILS_FOR_SHORT  = 3;     // 연속 실패 몇 번부터 짧게 기다릴지
 const uint8_t  GPS_FULL_TRY_EVERY   = 6;     // 짧게 기다리는 동안에도 이 횟수마다 한 번은 끝까지 기다린다
@@ -221,6 +227,11 @@ const uint8_t  GPS_FULL_TRY_EVERY   = 6;     // 짧게 기다리는 동안에도
 //   (DVDD4V2, 승압 출력)에 잇는다. 잘 때 레일을 끊으면 이 축전기가 비고, 켤 때 LDO 입력이 순간 무너진다.
 //   레일을 잘 때도 살려 두면 축전기가 차 있어 웨이크 때 돌입이 없다(모뎀은 CPOF 로 꺼진 상태).
 #define GNSS_STANDBY 1
+// v1.3.5a: 켤 때 위성계를 GPS+BDS+GLONASS 로 바꾸는 명령(PCAS04,7). 창가 시험에서 v1.3.5 가 위치를 못 잡아
+// 원인을 가르려고 끌 수 있게 했다. 0 = 칩 기본 위성계 그대로(v1.3.4 와 같음).
+#ifndef L76K_MULTI_GNSS
+#define L76K_MULTI_GNSS 0
+#endif
 const uint32_t GNSS_WARM_MAX_MIN  = 240;    // 이보다 오래 잤으면 궤도 정보가 낡아 온시동을 기대하지 않는다(로그용)
 // 하늘 확인: 이 시간이 지나도 NMEA 가 한 글자도 없거나, 보이는 위성(GSV)이 이 수 이하면 곧바로 포기한다.
 // 교량 아래처럼 하늘이 막힌 자리에서 180초 × 60mA ≈ 3 mAh 를 매번 쓰지 않게 한다.
@@ -497,6 +508,11 @@ RTC_NOINIT_ATTR uint8_t rtc_stage;
 // ★v1.3.4: RTC_DATA 는 딥슬립이 아닌 리셋(브라운아웃 포함)마다 초기값으로 돌아간다. 켤 때 브라운아웃이
 //   두 번 연달아 나면 두 번째에서 빠른 보고 창이 0 으로 지워졌다(1호기 00:08 실측). 남은 분을 여기에도 둔다.
 RTC_NOINIT_ATTR uint32_t rtc_launch_keep;
+// v1.3.6: 마지막으로 서버에 보내는 데 성공한 뒤 지난 분(딥슬립 생존). 「살아 있음」 간격 판단에 쓴다.
+RTC_DATA_ATTR uint32_t rtc_min_since_ok = 0;
+bool     g_hb = false;          // 이번 웨이크에 「살아 있음」을 보낸다
+uint16_t g_gnss_try_s = 0;      // 이번 웨이크에 위치를 찾느라 쓴 초
+int      g_sats_view = -1;      // 위치를 못 잡았을 때 보이던 위성 수(GSV 합). -1 = 모름
 #define STAGE(n) (rtc_stage = (n))   // 전원을 새로 켰다(POWERON 이거나, 표시 없는 BROWNOUT)
 RTC_DATA_ATTR uint32_t rtc_launch_left_m = 0;   // 켠 직후 빠른 보고가 남은 분(v1.3.2)
 // ★v1.3.5 재부팅 고리 끊기: 사고 리셋(웨이크 중 브라운아웃, 태스크, RTC, 인터럽트 워치독, 패닉)이 잠들기 전에
@@ -1140,7 +1156,7 @@ void l76kSend(const char* body) {
 // 문장은 늘 줄인다: GGA, RMC 매 초, GSV 3초마다(하늘 확인용), 나머지는 끈다. UART 에 읽을 글자가 줄어든다.
 // ★저장 명령(PCAS00)은 보내지 않는다. 칩이 전원을 잃으면 기본으로 돌아가므로 매 웨이크 다시 보낸다.
 void l76kConfig(bool cold) {
-  if (cold) {   // 막 켠 칩이 명령을 받을 수 있게 첫 글자가 나올 때까지 최대 1초 기다린다
+  if (cold && L76K_MULTI_GNSS) {   // 막 켠 칩이 명령을 받을 수 있게 첫 글자가 나올 때까지 최대 1초 기다린다
     uint32_t t0 = millis();
     while (!SerialGPS.available() && millis() - t0 < 1000) delay(20);
     l76kSend("PCAS04,7");
@@ -1174,9 +1190,18 @@ bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
   bool have = false;            // 첫 고정을 잡았나
   float bestH = 999.0f;
   uint32_t gateEnd = 0;
+  uint32_t nextDbg = start + 15000;
   while (millis() - start < timeoutMs) {
     wdtFeed();
     while (SerialGPS.available()) gps.encode(SerialGPS.read());
+    if ((int32_t)(millis() - nextDbg) >= 0) {   // v1.3.5a 진단: 15초마다 보이는 위성, 쓰는 위성, HDOP
+      nextDbg += 15000;
+      Serial.printf("[FF] GPS %lus view=%d used=%lu hdop=%.1f loc=%d chars=%lu\n",
+                    (unsigned long)((millis() - start) / 1000), satsInView(),
+                    (unsigned long)gps.satellites.value(),
+                    gps.hdop.isValid() ? gps.hdop.hdop() : -1.0, (int)gps.location.isValid(),
+                    (unsigned long)gps.charsProcessed());
+    }
     bool locOk  = gps.location.isValid() && gps.location.age() < 3000 && gps.satellites.value() >= 4;
     bool timeOk = gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2025;
     // RMC(날짜)는 같은 에포크에 오므로 지연 최대 ~1초. 날짜 검증 없이 고르면 ts_fix 가 비어 서버가
@@ -1387,6 +1412,34 @@ void deepSleepFor(uint32_t minutes, bool cutRail = false) {
 uint32_t g_next_sleep_m = SLEEP_MINUTES;
 void deepSleep() { deepSleepFor(g_next_sleep_m); }
 
+// 「살아 있음」 본문(v1.3.6). 좌표 없이 깨어났다는 사실과 상태만 보낸다. 서버는 kind:"hb" 를 핑과 따로 쌓는다.
+// ts 는 GPS 시각이 유효할 때만 넣는다(없으면 서버가 수신 시각으로 채우고 ts_est 를 붙인다).
+String buildHbBody(uint32_t seq, float batt) {
+  String b = String("{\"kind\":\"hb\",\"device_id\":\"") + ident.device_id + "\",\"site_id\":\"" + SITE_ID + "\"";
+  b += ",\"seq\":" + String(seq);
+  if (batt > 1.0f) b += ",\"batt\":" + String(batt, 2);
+  b += ",\"fw_version\":\"" FW_VERSION "\"";
+  b += ",\"sample_interval_s\":" + String((uint32_t)g_next_sleep_m * 60);
+  uint16_t smv = readSolarMv();
+  if (smv != 0xFFFF)              b += ",\"solar_v\":" + String(smv / 1000.0f, 2);
+  b += ",\"reset_reason\":" + String((int)g_reset);
+  b += ",\"brownouts\":" + String(g_brownouts);
+  if (st.gnss_miss)               b += ",\"gnss_miss\":" + String(st.gnss_miss);
+  if (st.gnss_fail_last)          b += ",\"gnss_fail\":" + String(st.gnss_fail_last);
+  if (g_sats_view >= 0)           b += ",\"sats_view\":" + String(g_sats_view);
+  b += ",\"gnss_try_s\":" + String(g_gnss_try_s);
+  if (st.net_stage_prev)          b += ",\"net_stage_prev\":" + String(st.net_stage_prev);
+  if (st.vmin_tx_mv_prev)         b += ",\"vmin_tx_prev\":" + String(st.vmin_tx_mv_prev / 1000.0f, 2);
+  if (g_store_fail)               b += ",\"store_fail\":" + String(g_store_fail);
+  if (rtc_iccid[0])               b += ",\"iccid\":\"" + String(rtc_iccid) + "\"";
+  if (gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2025) {
+    char ts[24]; gpsIso8601(ts, sizeof(ts));
+    if (ts[0]) b += ",\"ts\":\"" + String(ts) + "\"";
+  }
+  b += "}";
+  return b;
+}
+
 void setup() {
   wdtStart();   // v1.3.5: 맨 먼저. 태스크 워치독 240초, RTC 워치독 900초(웨이크 전체 상한)
   // 웨이크 직후 홀드 해제(없으면 이후 digitalWrite가 홀드에 막혀 무효)
@@ -1501,6 +1554,7 @@ void setup() {
   g_next_sleep_m = launchIntervalM(chooseIntervalM(vbat0, false, false), vbat0);
 
   st.min_since_try += st.last_sleep_m;
+  if (g_reset == ESP_RST_DEEPSLEEP && rtc_min_since_ok < 100000) rtc_min_since_ok += st.last_sleep_m;
 
   // ── 이어 보내기(순단 복구, v1.3) ──
   // 송신 도중 리셋이면 그 웨이크의 고정은 이미 저장돼 있다. 냉시동 GNSS 를 다시 돌리지 않고
@@ -1524,15 +1578,26 @@ void setup() {
       st.gps_short_n++;
       if (st.gps_short_n % GPS_FULL_TRY_EVERY != 0) gpsTimeout = GPS_SHORT_TIMEOUT_MS;
     }
+    if (g_cold) {   // v1.3.6: 켠 직후 첫 회차는 궤도 정보부터 받아야 해서 길게 기다린다
+      gpsTimeout = GPS_FIRST_FIX_TIMEOUT_MS;
+      Serial.printf("[FF] 전원 투입 첫 회차 → 위치를 최대 %lu초 기다림\n", (unsigned long)(gpsTimeout / 1000));
+    }
     if (GNSS_STANDBY && rtc_gnss_kept)
       Serial.printf("[FF] GNSS 대기에서 깸(직전 잠 %lu분, 온시동 기대 %s)\n", (unsigned long)st.last_sleep_m,
                     st.last_sleep_m <= GNSS_WARM_MAX_MIN ? "예" : "아니오");
+    uint32_t gt0 = millis();
     fixed = getFix(lat, lon, gpsTimeout);
+    g_gnss_try_s = (uint16_t)min((uint32_t)65534, (millis() - gt0) / 1000);
     if (fixed) { st.gps_fails = 0; st.gps_short_n = 0; }
     else {
       if (st.gps_fails < 255) st.gps_fails++;
       if (st.gnss_miss < 65535) st.gnss_miss++;   // v1.3.5: 다음 고정 기록에 실어 보낸다
       st.gnss_fail_last = g_gnss_fail_reason;
+      g_sats_view = satsInView();
+      // v1.3.6: 보낼 기록이 없으면 「살아 있음」을 보낼지 정한다(켠 직후 첫 회차, 또는 마지막 성공 뒤 HB_EVERY_MIN 분)
+      g_hb = storeCount() == 0 && (g_cold || rtc_min_since_ok >= HB_EVERY_MIN);
+      if (g_hb) Serial.printf("[FF] 위치 못 잡음, 보낼 기록 없음 → 「살아 있음」 보냄(마지막 성공 뒤 %lu분)\n",
+                              (unsigned long)rtc_min_since_ok);
     }
     wdtFeed();
   } else {
@@ -1609,7 +1674,7 @@ void setup() {
     Serial.println("[FF] GPS fix 실패(실내면 창가/야외로). 버퍼 있으면 전송만 시도");
   }
 
-  if (storeCount() == 0) {         // 보낼 것도 없음 → 바로 슬립
+  if (storeCount() == 0 && !g_hb) {   // 보낼 것도 없음 → 바로 슬립
     Serial.println("[FF] 전송할 레코드 없음 → 슬립");
     deepSleep();
   }
@@ -1663,8 +1728,20 @@ void setup() {
   //   // + AT+CSSLCFG "authmode"=서버검증, "sni"/"servername"=SERVER_HOST (포크 SSL 설정)
   // #endif
 
+  bool hbOk = false;
+  if (g_hb) {   // v1.3.6 「살아 있음」. 저장소에 쌓지 않고 이 접속에서 한 번(실패 시 한 번 더)만 보낸다
+    STAGE(6);
+    String hb = buildHbBody(nextSeq(), vbat);
+    for (uint8_t t = 0; t < 2 && !hbOk && !budgetOver(); t++) {
+      if (t) { delay(POST_RETRY_GAP_MS); wdtFeed(); if (!netAlive()) break; }
+      Serial.printf("[FF] POST 살아 있음 (%u바이트)\n", hb.length());
+      hbOk = postBody(hb);
+    }
+    st.net_stage_prev = hbOk ? NS_POSTED : NS_POST_FAIL;
+  }
   int sent = flushStore();
-  Serial.printf("[FF] 전송 %d건, 잔여 %u건\n", sent, (unsigned)storeCount());
+  if (sent > 0 || hbOk) rtc_min_since_ok = 0;
+  Serial.printf("[FF] 전송 %d건%s, 잔여 %u건\n", sent, hbOk ? " + 살아 있음" : "", (unsigned)storeCount());
 
   netDisconnect();
   vmonStop();
