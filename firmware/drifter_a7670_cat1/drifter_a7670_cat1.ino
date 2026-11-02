@@ -360,8 +360,14 @@ void wdtStart() {
   wdt_hal_enable(&g_rwdt);
   wdt_hal_write_protect_enable(&g_rwdt);
 }
-// 태스크 워치독만 먹인다(RTC 워치독은 웨이크 전체 상한이라 먹이지 않는다).
-inline void wdtFeed() { esp_task_wdt_reset(); }
+// 둘 다 먹인다. RTC 워치독은 CPU 가 굳어 먹이기가 멈춘 경우만 잡는다(웨이크 전체 상한은 망 예산이 맡는다).
+// 먹이지 않으면 GPS 195초 + 망 600초 + 마지막 POST 로 정상 웨이크가 900초에 닿을 수 있다(검수 261102).
+inline void wdtFeed() {
+  esp_task_wdt_reset();
+  wdt_hal_write_protect_disable(&g_rwdt);
+  wdt_hal_feed(&g_rwdt);
+  wdt_hal_write_protect_enable(&g_rwdt);
+}
 // 딥슬립 직전에 둘 다 끈다.
 void wdtStop() {
   wdt_hal_write_protect_disable(&g_rwdt);
