@@ -47,7 +47,7 @@
  *   LittleFS 자동 포맷 막기, L76K 설정 명령, 고정 품질 기다리기, GNSS 실패 횟수 싣기. 자세한 것은 CHANGELOG.
  */
 
-#define FW_VERSION "1.3.7"
+#define FW_VERSION "1.3.8"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -153,6 +153,7 @@ const uint32_t BATCH_MAX = 20;
 // GPS 기록은 매 웨이크 그대로 쌓는다. 접속이 한 번 되면 처음으로 돌아간다.
 const uint32_t NET_BACKOFF_START_MINUTES = 60;
 const uint32_t STRANDED_TRY_MINUTES = 360;   // 백오프 최대치
+const uint32_t LAUNCH_NET_BACKOFF_MAX = 10;   // v1.3.8: 켠 직후 빠른 보고 창 안의 백오프 상한(분)
 
 // ── 켠 직후(v1.3.2, 2026-10-06) ──
 // 전원 투입(슬라이드 스위치 ON, 셀 넣기, 자석 떼기, USB 리셋)은 「새로 시작」으로 본다.
@@ -1700,9 +1701,13 @@ void setup() {
   // ② 망 접속 → 버퍼 플러시
   // 접속 실패가 이어지면 모뎀 재시도 간격을 늘린다(좌초 의심이면 바로 최대치). 이어 보내기는 백오프를 건너뛴다.
   uint32_t backoffM = 0;
-  if (st.last_net_fail && !resumeTx) {
-    backoffM = NET_BACKOFF_START_MINUTES << min((int)st.net_fails - 1, 3);
+  // ★v1.3.8: 첫 실패 한 번은 다음 웨이크에 바로 다시 시도한다(쉬지 않는다). v1.3.7 까지는 한 번만 실패해도
+  //   60분을 쉬어, 창가에서 위치 4건을 잡고도 1시간 무신호였다(1호기 2026-11-03 07:41~). 연속 두 번째부터 60→120→240분.
+  //   켠 직후 빠른 보고 창(rtc_launch_left_m > 0)에서는 최대 10분만 쉰다(방류 직후 화면이 비지 않게).
+  if (st.last_net_fail && !resumeTx && st.net_fails >= 2) {
+    backoffM = NET_BACKOFF_START_MINUTES << min((int)st.net_fails - 2, 3);
     if (st.last_stranded || backoffM > STRANDED_TRY_MINUTES) backoffM = STRANDED_TRY_MINUTES;
+    if (rtc_launch_left_m > 0 && backoffM > LAUNCH_NET_BACKOFF_MAX) backoffM = LAUNCH_NET_BACKOFF_MAX;
   }
   if (backoffM && st.min_since_try < backoffM) {
     Serial.printf("[FF] 접속 실패 %u회 → 모뎀 생략(%lu/%lu분), 저장 %u건\n",
