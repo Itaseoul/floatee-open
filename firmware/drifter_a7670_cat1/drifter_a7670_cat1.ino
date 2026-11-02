@@ -47,7 +47,7 @@
  *   LittleFS 자동 포맷 막기, L76K 설정 명령, 고정 품질 기다리기, GNSS 실패 횟수 싣기. 자세한 것은 CHANGELOG.
  */
 
-#define FW_VERSION "1.3.6"
+#define FW_VERSION "1.3.7"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -508,8 +508,11 @@ RTC_NOINIT_ATTR uint8_t rtc_stage;
 // ★v1.3.4: RTC_DATA 는 딥슬립이 아닌 리셋(브라운아웃 포함)마다 초기값으로 돌아간다. 켤 때 브라운아웃이
 //   두 번 연달아 나면 두 번째에서 빠른 보고 창이 0 으로 지워졌다(1호기 00:08 실측). 남은 분을 여기에도 둔다.
 RTC_NOINIT_ATTR uint32_t rtc_launch_keep;
-// v1.3.6: 마지막으로 서버에 보내는 데 성공한 뒤 지난 분(딥슬립 생존). 「살아 있음」 간격 판단에 쓴다.
-RTC_DATA_ATTR uint32_t rtc_min_since_ok = 0;
+// v1.3.6: 마지막으로 서버에 보내는 데 성공한 뒤 지난 분. 「살아 있음」 간격 판단에 쓴다.
+// ★v1.3.7: RTC_DATA 였을 때는 브라운아웃 같은 사고 리셋마다 0 으로 지워져, 그 뒤 60분 동안 「살아 있음」을 놓쳤다
+//   (1호기 2026-11-02 21:30~11-03 00:38 창가, 살아 있는데 3시간 무신호). RTC_NOINIT 로 옮겨 사고 리셋에도 남긴다.
+//   전원을 완전히 끊으면 쓰레기값이니 새로 켠 때(g_cold) 0 으로 두고, 터무니없이 크면 0 으로 고친다.
+RTC_NOINIT_ATTR uint32_t rtc_min_since_ok;
 bool     g_hb = false;          // 이번 웨이크에 「살아 있음」을 보낸다
 uint16_t g_gnss_try_s = 0;      // 이번 웨이크에 위치를 찾느라 쓴 초
 int      g_sats_view = -1;      // 위치를 못 잡았을 때 보이던 위성 수(GSV 합). -1 = 모름
@@ -1554,6 +1557,7 @@ void setup() {
   g_next_sleep_m = launchIntervalM(chooseIntervalM(vbat0, false, false), vbat0);
 
   st.min_since_try += st.last_sleep_m;
+  if (g_cold || rtc_min_since_ok > 100000) rtc_min_since_ok = 0;   // v1.3.7: RTC_NOINIT 쓰레기값 거르기
   if (g_reset == ESP_RST_DEEPSLEEP && rtc_min_since_ok < 100000) rtc_min_since_ok += st.last_sleep_m;
 
   // ── 이어 보내기(순단 복구, v1.3) ──
@@ -1595,7 +1599,8 @@ void setup() {
       st.gnss_fail_last = g_gnss_fail_reason;
       g_sats_view = satsInView();
       // v1.3.6: 보낼 기록이 없으면 「살아 있음」을 보낼지 정한다(켠 직후 첫 회차, 또는 마지막 성공 뒤 HB_EVERY_MIN 분)
-      g_hb = storeCount() == 0 && (g_cold || rtc_min_since_ok >= HB_EVERY_MIN);
+      // v1.3.7: 사고 리셋(브라운아웃, 워치독, 패닉) 직후 회차도 보낸다. 서버에서 「되살아남」이 보이게 한다.
+      g_hb = storeCount() == 0 && (g_cold || g_unexpected_reset || rtc_min_since_ok >= HB_EVERY_MIN);
       if (g_hb) Serial.printf("[FF] 위치 못 잡음, 보낼 기록 없음 → 「살아 있음」 보냄(마지막 성공 뒤 %lu분)\n",
                               (unsigned long)rtc_min_since_ok);
     }
