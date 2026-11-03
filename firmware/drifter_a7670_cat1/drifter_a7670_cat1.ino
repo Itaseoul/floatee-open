@@ -47,7 +47,7 @@
  *   LittleFS 자동 포맷 막기, L76K 설정 명령, 고정 품질 기다리기, GNSS 실패 횟수 싣기. 자세한 것은 CHANGELOG.
  */
 
-#define FW_VERSION "1.3.9"
+#define FW_VERSION "1.4.0"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -473,6 +473,14 @@ struct PingRec {
   uint8_t  gnss_fail;       // 마지막 실패 사유(1 NMEA 없음, 2 하늘 막힘, 3 시간 초과). 0 = 없음
 };
 static_assert(sizeof(PingRec) == 96, "PingRec 크기가 바뀌면 ffid_store.h 파일 이름과 STORE_MAX 근거를 함께 고친다");
+// v1.4.0 위성 목록(설명은 getFix 위 「v1.4.0 위성 목록」). 기록 본문을 만드는 곳보다 앞에 둔다.
+struct SvInfo { char sys; uint8_t prn; uint8_t el; uint16_t az; uint8_t snr; bool used; };
+const uint8_t SV_MAX = 48;
+SvInfo   g_sv[SV_MAX];
+uint8_t  g_sv_n = 0;
+uint32_t g_sv_seq = 0;          // 위성 목록을 실을 기록의 seq(이번 웨이크). 0 = 없음
+char     g_nmea[100];
+uint8_t  g_nmea_len = 0;
 
 // 망 접속 단계(net_stage_prev)
 enum NetStage : uint8_t {
@@ -768,6 +776,7 @@ String buildPingBody(const PingRec &r) {
   if (r.hdop >= 0) b += ",\"fix_quality\":" + String(r.hdop, 1);
   b += ",\"gnss_source\":\"l76k\"";
   b += ",\"fw_version\":\"" FW_VERSION "\"";
+  if (g_sv_seq && r.seq == g_sv_seq && g_sv_n) { String sv = svString(); if (sv.length()) b += ",\"sv\":\"" + sv + "\""; }
   if (r.wake_mah_prev >= 0) {
     b += ",\"wake_mah_prev\":" + String(r.wake_mah_prev, 3);
     b += ",\"wake_s_prev\":" + String(r.wake_s_prev, 1);
@@ -1178,7 +1187,7 @@ void l76kConfig(bool cold) {
     while (!SerialGPS.available() && millis() - t0 < 1000) delay(20);
     l76kSend("PCAS04,7");
   }
-  l76kSend("PCAS03,1,0,0,3,1,0,0,0,0,0,,,0,0");
+  l76kSend("PCAS03,1,0,1,3,1,0,0,0,0,0,,,0,0");   // v1.4.0: GSA 켬(위치 계산에 쓴 위성 번호)
 }
 
 // L76K GPS(Serial2)에서 NMEA를 읽어 위경도 취득. 성공 시 true.
@@ -1189,9 +1198,93 @@ void l76kConfig(bool cold) {
 // ★v1.3.5 품질 기다리기: 첫 고정에서 HDOP 2.0 이하이고 위성 6개 이상이면 바로 끝낸다. 아니면 최대 15초 더
 //   보면서 HDOP 가 가장 낮은 표본을 고른다(전체 timeoutMs 를 넘지 않는다). 고른 표본의 위치, HDOP, 위성 수,
 //   시각을 g_fix_* 에 남긴다. 실패하면 g_gnss_fail_reason(1 NMEA 없음, 2 하늘 막힘, 3 시간 초과)을 남긴다.
+// ── v1.4.0 위성 목록 ── GSV(보이는 위성: 번호, 앙각, 방위, 신호 세기)와 GSA(위치 계산에 쓴 번호)를 직접 읽는다.
+//   TinyGPSPlus 는 여러 문장으로 나뉜 GSV 를 다루지 못해 줄을 따로 모은다. 이번 웨이크의 기록에만 싣고 저장소에는 넣지 않는다
+//   (PingRec 96바이트 그대로). 형식: "G12:45:120:38u" = 위성계 글자, 번호, 앙각(도), 방위(도), SNR(dB), u = 계산에 씀.
+//   위성계 글자: G 미국 GPS, R 러시아 GLONASS, E 유럽 Galileo, C 중국 BeiDou, J 일본 QZSS.
+char talkerSys(const char* t) {
+  if (t[0] == 'G' && t[1] == 'P') return 'G';
+  if (t[0] == 'G' && t[1] == 'L') return 'R';
+  if (t[0] == 'G' && t[1] == 'A') return 'E';
+  if ((t[0] == 'G' && t[1] == 'B') || (t[0] == 'B' && t[1] == 'D')) return 'C';
+  if (t[0] == 'G' && t[1] == 'Q') return 'J';
+  return '?';
+}
+int svFind(char sys, uint8_t prn) {   // 없으면 더한다. 자리가 없으면 -1
+  for (uint8_t i = 0; i < g_sv_n; i++) if (g_sv[i].sys == sys && g_sv[i].prn == prn) return i;
+  if (g_sv_n >= SV_MAX) return -1;
+  SvInfo& v = g_sv[g_sv_n]; v.sys = sys; v.prn = prn; v.el = 0; v.az = 0; v.snr = 0; v.used = false;
+  return g_sv_n++;
+}
+// 쉼표로 나눈 칸(별표 앞까지). 빈 칸은 빈 문자열.
+uint8_t nmeaFields(char* line, char* f[], uint8_t maxF) {
+  uint8_t n = 0; char* p = line;
+  char* star = strchr(line, '*'); if (star) *star = 0;
+  while (n < maxF) { f[n++] = p; char* c = strchr(p, ','); if (!c) break; *c = 0; p = c + 1; }
+  return n;
+}
+void nmeaLine(char* line) {
+  if (line[0] != '$' || strlen(line) < 7) return;
+  char* f[24]; uint8_t n;
+  if (!strncmp(line + 3, "GSV", 3)) {
+    char sys = talkerSys(line + 1);
+    n = nmeaFields(line, f, 24);
+    for (uint8_t i = 4; i + 3 < n; i += 4) {
+      int prn = atoi(f[i]); if (prn <= 0 || prn > 255) continue;
+      int k = svFind(sys, (uint8_t)prn); if (k < 0) continue;
+      g_sv[k].el = (uint8_t)constrain(atoi(f[i + 1]), 0, 90);
+      g_sv[k].az = (uint16_t)constrain(atoi(f[i + 2]), 0, 359);
+      g_sv[k].snr = (uint8_t)constrain(atoi(f[i + 3]), 0, 99);   // 빈 칸 = 0(추적 안 함)
+    }
+  } else if (!strncmp(line + 3, "GSA", 3)) {
+    n = nmeaFields(line, f, 24);
+    if (n < 15) return;
+    char sys = talkerSys(line + 1);
+    if (n >= 19 && f[18][0]) {   // NMEA 4.1 시스템 ID: 1 GPS 2 GLONASS 3 Galileo 4 BeiDou 5 QZSS
+      int id = atoi(f[18]);
+      sys = id == 1 ? 'G' : id == 2 ? 'R' : id == 3 ? 'E' : id == 4 ? 'C' : id == 5 ? 'J' : sys;
+    }
+    for (uint8_t i = 3; i <= 14; i++) {
+      int prn = atoi(f[i]); if (prn <= 0 || prn > 255) continue;
+      int k = svFind(sys, (uint8_t)prn); if (k >= 0) g_sv[k].used = true;
+    }
+  }
+}
+void gpsFeed(char c) {
+  gps.encode(c);
+  if (c == '$') g_nmea_len = 0;
+  if (c == '\r' || c == '\n') { if (g_nmea_len) { g_nmea[g_nmea_len] = 0; nmeaLine(g_nmea); g_nmea_len = 0; } return; }
+  if (g_nmea_len < sizeof(g_nmea) - 1) g_nmea[g_nmea_len++] = c;
+}
+// 기록에 붙일 문자열. 신호가 잡힌 위성(SNR>0)이나 계산에 쓴 위성만, 최대 40개.
+String svString() {
+  String o; uint8_t k = 0;
+  for (uint8_t i = 0; i < g_sv_n && k < 40; i++) {
+    const SvInfo& v = g_sv[i];
+    if (!v.snr && !v.used) continue;
+    if (k++) o += ',';
+    o += v.sys; o += String(v.prn); o += ':'; o += String(v.el); o += ':'; o += String(v.az); o += ':'; o += String(v.snr);
+    if (v.used) o += 'u';
+  }
+  return o;
+}
+
 const float    FIX_GOOD_HDOP  = 2.0f;
 const uint8_t  FIX_GOOD_SATS  = 6;
 const uint32_t FIX_IMPROVE_MS = 15000;
+// ★v1.4.0: 위치를 잡은 뒤 FIX_SETTLE_MS 동안 더 받아, 받은 위치들의 가운데 값(위도, 경도 따로)을 보낸다.
+//   한 번 잡은 뒤 다음 회차는 2초 만에 잡고 곧바로 보내 수십 m 씩 튀었다(1호기 2026-11-03 창밖 3건이 동서 약 140 m).
+//   좋은 HDOP 에서 바로 끝내던 v1.3.5 의 지름길은 쓰지 않는다. 회차당 GPS 가 약 20초 더 켜진다.
+const uint32_t FIX_SETTLE_MS = 20000;
+const uint8_t  FIX_SAMPLES_MAX = 30;
+double   g_smp_lat[FIX_SAMPLES_MAX], g_smp_lon[FIX_SAMPLES_MAX];
+uint8_t  g_smp_n = 0;
+double medianOf(double* a, uint8_t n) {   // 작은 배열이라 삽입 정렬
+  double t[FIX_SAMPLES_MAX];
+  for (uint8_t i = 0; i < n; i++) t[i] = a[i];
+  for (uint8_t i = 1; i < n; i++) { double x = t[i]; int j = i - 1; while (j >= 0 && t[j] > x) { t[j + 1] = t[j]; j--; } t[j + 1] = x; }
+  return n % 2 ? t[n / 2] : (t[n / 2 - 1] + t[n / 2]) / 2.0;
+}
 bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
   STAGE(2);
   pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH);  // GPS 레일 확보(모뎀보다 먼저 필요)
@@ -1204,13 +1297,14 @@ bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
   g_gnss_fix_s = 0xFFFF;
   g_gnss_fail_reason = 0;
   g_fix_hdop = -1.0f; g_fix_sats = 0; g_fix_ts[0] = 0;
+  g_smp_n = 0; g_sv_n = 0; g_nmea_len = 0;
   bool have = false;            // 첫 고정을 잡았나
   float bestH = 999.0f;
   uint32_t gateEnd = 0;
   uint32_t nextDbg = start + 15000;
   while (millis() - start < timeoutMs) {
     wdtFeed();
-    while (SerialGPS.available()) gps.encode(SerialGPS.read());
+    while (SerialGPS.available()) gpsFeed((char)SerialGPS.read());
     if ((int32_t)(millis() - nextDbg) >= 0) {   // v1.3.5a 진단: 15초마다 보이는 위성, 쓰는 위성, HDOP
       nextDbg += 15000;
       Serial.printf("[FF] GPS %lus view=%d used=%lu hdop=%.1f loc=%d chars=%lu\n",
@@ -1230,8 +1324,9 @@ bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
       if (!have) {
         have = true;
         g_gnss_fix_s = (millis() - start) / 1000;
-        gateEnd = millis() + FIX_IMPROVE_MS;
+        gateEnd = millis() + FIX_SETTLE_MS;
       }
+      if (g_smp_n < FIX_SAMPLES_MAX) { g_smp_lat[g_smp_n] = la; g_smp_lon[g_smp_n] = lo; g_smp_n++; }
       if (h < bestH) {
         bestH = h;
         lat = la; lon = lo;
@@ -1239,14 +1334,12 @@ bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
         g_fix_sats = sv;
         gpsIso8601(g_fix_ts, sizeof(g_fix_ts));
       }
-      if (h <= FIX_GOOD_HDOP && sv >= FIX_GOOD_SATS) {
-        lat = la; lon = lo; g_fix_hdop = h; g_fix_sats = sv;
-        gpsIso8601(g_fix_ts, sizeof(g_fix_ts));
-        return true;
-      }
     }
     if (have && (int32_t)(millis() - gateEnd) >= 0) {
-      Serial.printf("[FF] GPS 품질 기다리기 끝: 고른 HDOP %.1f 위성 %u\n", g_fix_hdop, (unsigned)g_fix_sats);
+      if (g_smp_n >= 3) { lat = medianOf(g_smp_lat, g_smp_n); lon = medianOf(g_smp_lon, g_smp_n); }
+      gpsIso8601(g_fix_ts, sizeof(g_fix_ts));   // 가운데 값의 시각은 모으기를 끝낸 때로 적는다
+      Serial.printf("[FF] GPS 20초 모으기 끝: 표본 %u, 가장 낮은 HDOP %.1f 위성 %u, 위성 목록 %u\n",
+                    (unsigned)g_smp_n, g_fix_hdop, (unsigned)g_fix_sats, (unsigned)g_sv_n);
       return true;
     }
     if (!have && !skyChecked && millis() - start >= GPS_SKY_CHECK_MS) {
@@ -1265,7 +1358,10 @@ bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
     }
     delay(10);
   }
-  if (have) return true;   // 품질 기다리는 중에 전체 시간이 끝났다. 고른 표본을 쓴다
+  if (have) {   // 모으는 중에 전체 시간이 끝났다. 모은 것으로 가운데 값을 쓴다
+    if (g_smp_n >= 3) { lat = medianOf(g_smp_lat, g_smp_n); lon = medianOf(g_smp_lon, g_smp_n); }
+    return true;
+  }
   // 타임아웃 폴백: 위치만이라도 유효하면 관측은 살린다(ts_fix만 결측 → 서버가 server_recv 강등)
   if (gps.location.isValid() && gps.location.age() < 3000 && gps.satellites.value() >= 4) {
     lat = gps.location.lat(); lon = gps.location.lng();
@@ -1630,6 +1726,7 @@ void setup() {
     r.batt = readBatteryV();
     r.hdop = g_fix_hdop;   // v1.3.5: 품질 기다리기에서 고른 표본의 값
     r.seq  = nextSeq();
+    g_sv_seq = r.seq;   // v1.4.0: 이 기록에만 위성 목록을 싣는다
     r.wake_mah_prev  = rtc_prev_wake_mah;
     r.wake_s_prev    = rtc_prev_wake_s;
     r.i_peak_ma_prev = rtc_prev_i_peak;
