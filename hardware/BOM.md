@@ -98,6 +98,8 @@ What changes when swapping A → B (or C):
 
 RTK note (option D, research only): the National Geographic Information Institute (NGII) announced free internet RTK corrections on its platform (2024-02-26; RTS1 VRS and RTS2 FKP, port 2101); vendor sources say login became mandatory on 2025-08-01 (official notice not checked). Whether LC29H(DA/EA) accepts the NGII stream is **not confirmed** (forum: it takes RTCM3 1005/1006 and MSM4/MSM7, not 103x).
 
+Review before buying (2026-11-03, engineering fit and public user reports; detail in the project's internal review): buy B with the **u-blox ANN-MB5** for the bench comparison (net gain inside the F10N's default LNA range, cellular-band rejection stated, IPX7); the Waveshare antenna's ~28 dB LNA needs the F10N low-gain LNA mode and one independent comparison found a same-price Waveshare L1/L5 pairing noticeably weaker. Neither 50 mm antenna fits the PET-bottle GNSS slot (44 mm): an in-bottle antenna must be a 25–35 mm L1/L5 active patch rated down to 2.7 V. Before wiring B to a drifter board, measure (1) the V3V rail rise time against the NEO-F10N's 25 µs/V minimum ramp (absolute maximum rating), (2) antenna current in software standby, (3) antenna voltage at the SMA (~3.0 V after VCC_RF and the 10 Ω feed resistor). Try configuration in RAM first; a wrong baud rate saved to flash has bricked boards.
+
 Decision rule (proposed): run B next to unit 1 at the same open spot for 20 minutes. If its resting fixes stay within ~2 m, make B (or a cheaper carrier board for the same module) a **kit option for narrow streams**; keep A as the default for wide rivers and cost-sensitive teams.
 
 ## Tier 2 — Reusable Robust (upgrade, USD 90–130)
