@@ -38,7 +38,7 @@ The tiers below are kept as the reference design. What participants build now is
 | Compute + modem + GPS | ESP32 + LTE Cat.1/Cat.1 bis + onboard GNSS | LILYGO T-A7670G R2 "With GPS (L76K)" — ★pick the **A7670G (2G 4G)** variant, not "4G No SMS"; ★the A7670 **modem has no GNSS**, so "with GPS" simply means an L76K chip wired to the ESP32 UART. If that variant is out of stock, a "Without GPS" board **+ a separate UART GNSS module** is the same architecture — wiring, the critical power-gating rule, and the extra gates are in [GPS_MODULE_WIRING.md](GPS_MODULE_WIRING.md) | ESP32 + A76xx board with real GNSS; pick A7670 band variant for your region | 27–33 |
 | Battery | 18650 cell + **protection circuit**, verify holder length | **Default (2026-10-30): a protected cell** (protection circuit built in; v4 reference 18.5×69 mm, button top). Wide-mouth branch alternative: **Samsung 30Q unprotected** in an **external 1-cell holder**, wired through a **PCM (protection module: cuts over-discharge, over-charge and short circuit; 3.7 V 1-cell, continuous ≥3 A)** to the board's rear holder terminals; **leave the board's own holder empty** (protected cells are 69–70 mm long and do not fit the 65 mm holder) | any protected 18650, or any unprotected 18650 + 1-cell PCM rated ≥3 A continuous | 5–8 |
 | SIM | local data SIM (Korea) or global IoT roaming SIM (elsewhere) | **Korea: participant's own domestic SIM in their own name, any carrier** (KT, SKT, LG U+ and their MVNOs; the A7670G covers all three carriers' LTE bands, no carrier confirmed on this board yet). Choose a **voice-inclusive plan** (data-only plans can refuse unregistered devices) and **activate it in a phone first**, then move it to the board | global IoT roaming SIM (1NCE / Soracom) outside Korea | 5–14 |
-| Antennas | LTE + GNSS, kept above water | board-included uFL antennas | extend outside if sealing | 0–8 |
+| Antennas | LTE + GNSS, kept above water | board-included uFL antennas (L1 only; a dual-band GNSS option needs an L1+L5 antenna, see GNSS options below) | extend outside if sealing | 0–8 |
 | Housing | RF-transparent float, sealed, antenna above waterline | upcycled PET bottle | any clear plastic bottle | 0–5 |
 | Ballast (self-righting) | low weight so antenna rights up | sinker at belly + printed keel | any dense non-toxic weight | 2–5 |
 | Sealant | marine/silicone sealant + grommet | marine silicone | any waterproof sealant | 3–8 |
@@ -60,6 +60,26 @@ For missions where a unit **dwells in-coverage for weeks** (estuary retention �
 | Battery (optional 2nd) | ★**matched + isolation diode/balancing**, belly placement; else one larger protected cell | matched protected 18650 | 8–11 |
 
 Housing for this kit is a **1.5 L wide-mouth screw-lid container** (lid + gasket, a single leak path; product not yet chosen). A cut-and-resealed PET bottle is for demos and short runs only; a 1 L bottle is too small for the 84×112 mm panel. Everything else is identical to Tier 1. Keep the battery sized to survive the planned dwell on its own; solar is margin, not a design input, until bench G5 measures real harvest.
+
+## GNSS options — position accuracy (added 2026-11-03, comparison not yet run)
+
+The default L76K is single-frequency (L1). Unit 1 measured it on 2026-11-03: on an open rooftop six resting fixes fell within **5–9 m** of their median (20–25 satellites, firmware v1.4.1); indoors and at a window the spread was 30–240 m (reflections from walls). For small streams (2–30 m wide) that cannot tell the banks apart. Dual-frequency (L1+L5) receivers reject reflections much better. The options below are **alternatives to the L76K only**; the LILYGO board, modem and everything else stay the same.
+
+| Option | Module | Bands | Current (3.3 V, tracking) | Open-sky accuracy (maker's figure) | Orderable reference | ~USD (listings seen 2026-11-03) | Status |
+|---|---|---|---|---|---|---|---|
+| A (default) | Quectel **L76K** | L1 | ~29–31 mA (sibling L76-L sheet; L76K sheet not checked) | a few m; **measured 5–9 m** (unit 1, rooftop) | LILYGO "With GPS (L76K)" option | included | in kit |
+| B | u-blox **NEO-F10N** | L1+L5 | ~21–26 mA (SparkFun breakout) | ~1–1.5 m | SparkFun GNSS L1/L5 Breakout, GPS-24114 (SMA, 3.3 V, USB-C) | breakout ~41.5; bare module ~18–23 | **first to compare** |
+| C | Quectel **LC29H** (AA/BA dual-band) | L1+L5 | 16–44 mA (varies by variant) | ~1 m CEP | Waveshare LC29H GPS HAT (UART pins), bare module | bare module ~20 | candidate |
+| D (later) | Quectel **LC29H RTK variants** (DA/BS etc.) or u-blox F9 class | L1+L5 + RTK | higher; check variant | cm level **with correction data** | RTK corrections over the board's LTE (Korea: NGII public correction service) | module 20+; F9 class much higher | research only |
+
+What changes when swapping A → B/C:
+
+- **Antenna**: must be an **L1+L5 (dual-band) active antenna**. The board-included GNSS antenna is L1 only and cancels most of the gain. Budget ~15–30 USD; product not yet chosen.
+- **Wiring**: the same four wires as the L76K (3.3 V, GND, TX, RX) to the board's GPS UART — see [GPS_MODULE_WIRING.md](GPS_MODULE_WIRING.md) for the power-gating rule. Do not power the module from 5 V.
+- **Firmware**: NMEA parsing (TinyGPSPlus) is unchanged. The L76K-only `$PCAS` configuration commands must be skipped, and `GPS_BAUDRATE` set to the module's default (check the datasheet; it is not 9600 on every module). The v1.4 satellite list (`sv`) reads GSV and works with any NMEA receiver.
+- **Power**: tracking current is in the same range as the L76K; the LTE modem's transmit dominates the battery budget either way.
+
+Decision rule (proposed): run B next to unit 1 at the same open spot for 20 minutes. If its resting fixes stay within ~2 m, make B (or a cheaper carrier board for the same module) a **kit option for narrow streams**; keep A as the default for wide rivers and cost-sensitive teams. Prices are single-unit retail listings and change; confirm before ordering.
 
 ## Tier 2 — Reusable Robust (upgrade, USD 90–130)
 
