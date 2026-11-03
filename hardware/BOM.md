@@ -61,25 +61,44 @@ For missions where a unit **dwells in-coverage for weeks** (estuary retention �
 
 Housing for this kit is a **1.5 L wide-mouth screw-lid container** (lid + gasket, a single leak path; product not yet chosen). A cut-and-resealed PET bottle is for demos and short runs only; a 1 L bottle is too small for the 84×112 mm panel. Everything else is identical to Tier 1. Keep the battery sized to survive the planned dwell on its own; solar is margin, not a design input, until bench G5 measures real harvest.
 
-## GNSS options — position accuracy (added 2026-11-03, comparison not yet run)
+## GNSS options — position accuracy (added 2026-11-03, sources checked 2026-11-03, comparison not yet run)
 
-The default L76K is single-frequency (L1). Unit 1 measured it on 2026-11-03: on an open rooftop six resting fixes fell within **5–9 m** of their median (20–25 satellites, firmware v1.4.1); indoors and at a window the spread was 30–240 m (reflections from walls). For small streams (2–30 m wide) that cannot tell the banks apart. Dual-frequency (L1+L5) receivers reject reflections much better. The options below are **alternatives to the L76K only**; the LILYGO board, modem and everything else stay the same.
+The default L76K is single-frequency (L1). Unit 1 measured it on 2026-11-03: on an open rooftop six resting fixes fell within **5–9 m** of their median (20–25 satellites, firmware v1.4.1); indoors and at a window the spread was 30–240 m (reflections from walls). For small streams (2–30 m wide) that cannot tell the banks apart. Dual-frequency (L1+L5) receivers reject reflections much better. The options below replace **only the L76K**; the LILYGO board, modem and everything else stay the same.
 
-| Option | Module | Bands | Current (3.3 V, tracking) | Open-sky accuracy (maker's figure) | Orderable reference | ~USD (listings seen 2026-11-03) | Status |
+| Option | Module | Bands | Module current (tracking) | Open-sky accuracy (maker, CEP 50%) | I/O voltage | Default UART | Status |
 |---|---|---|---|---|---|---|---|
-| A (default) | Quectel **L76K** | L1 | ~29–31 mA (sibling L76-L sheet; L76K sheet not checked) | a few m; **measured 5–9 m** (unit 1, rooftop) | LILYGO "With GPS (L76K)" option | included | in kit |
-| B | u-blox **NEO-F10N** | L1+L5 | ~21–26 mA (SparkFun breakout) | ~1–1.5 m | SparkFun GNSS L1/L5 Breakout, GPS-24114 (SMA, 3.3 V, USB-C) | breakout ~41.5; bare module ~18–23 | **first to compare** |
-| C | Quectel **LC29H** (AA/BA dual-band) | L1+L5 | 16–44 mA (varies by variant) | ~1 m CEP | Waveshare LC29H GPS HAT (UART pins), bare module | bare module ~20 | candidate |
-| D (later) | Quectel **LC29H RTK variants** (DA/BS etc.) or u-blox F9 class | L1+L5 + RTK | higher; check variant | cm level **with correction data** | RTK corrections over the board's LTE (Korea: NGII public correction service) | module 20+; F9 class much higher | research only |
+| A (default) | Quectel **L76K** | L1 | ~29–31 mA (sibling L76-L sheet; L76K sheet not checked) | a few m; **measured 5–9 m** (unit 1, rooftop) | 3.3 V | (as wired today) | in kit, water test pending |
+| B | u-blox **NEO-F10N** | GPS L1+L5, Galileo E1+E5a, BeiDou B1C+B2a | 21 mA tracking, 26 mA acquisition (3.0 V, default) | 1 m multi-GNSS, 1.5 m GPS only | follows VCC 3.0–3.6 V, **fits ESP32 3.3 V** | **38400** 8N1 | **first to compare** |
+| C | Quectel **LC29H (AA)** | L1+L5 | 24 mA (3.3 V) | 1 m | **2.8 V I/O** (forum; hardware design not checked) — **needs level shifting** on ESP32 TX → module RX | 115200 | candidate, needs adapter |
+| D (later) | Quectel **LC29H (DA / EA)** RTK | L1+L5 + RTK | 30 mA | 1 m alone; 1 cm + 1 ppm with corrections | 2.8 V I/O | DA 115200, EA 460800 | research only |
 
-What changes when swapping A → B/C:
+Notes on the options:
 
-- **Antenna**: must be an **L1+L5 (dual-band) active antenna**. The board-included GNSS antenna is L1 only and cancels most of the gain. Budget ~15–30 USD; product not yet chosen.
-- **Wiring**: the same four wires as the L76K (3.3 V, GND, TX, RX) to the board's GPS UART — see [GPS_MODULE_WIRING.md](GPS_MODULE_WIRING.md) for the power-gating rule. Do not power the module from 5 V.
-- **Firmware**: NMEA parsing (TinyGPSPlus) is unchanged. The L76K-only `$PCAS` configuration commands must be skipped, and `GPS_BAUDRATE` set to the module's default (check the datasheet; it is not 9600 on every module). The v1.4 satellite list (`sv`) reads GSV and works with any NMEA receiver.
-- **Power**: tracking current is in the same range as the L76K; the LTE modem's transmit dominates the battery budget either way.
+- **NEO-F10N does not use GPS L5 by default** (it is still pre-operational); Galileo E5a and BeiDou B2a are used by default. Enabling GPS L5 needs a configuration change (Integration manual). Cold start 28 s, hot start 2 s, start-up current up to 100 mA. Datasheet UBX-23002117 R05.
+- **LC29H variants:** AA (dual-band, no RTK), BA (RTK + dead reckoning), CA (dead reckoning), DA (RTK 1 Hz), EA (RTK 1–10 Hz), AI (no GPS L5, NavIC L5 only, 1.8 m), BS (base station only, heading to end of life). Quectel product page.
+- **Other:** Allystar TAU1201 is L1+L5 (1 m CEP) but no 3.3 V carrier board was found; Quectel LC76G is **L1 only** and is not an option.
 
-Decision rule (proposed): run B next to unit 1 at the same open spot for 20 minutes. If its resting fixes stay within ~2 m, make B (or a cheaper carrier board for the same module) a **kit option for narrow streams**; keep A as the default for wide rivers and cost-sensitive teams. Prices are single-unit retail listings and change; confirm before ordering.
+Orderable boards and antennas (prices seen 2026-11-03, single unit, change often):
+
+| Item | Price | Where | Power / connector | Notes |
+|---|---|---|---|---|
+| SparkFun GNSS L1/L5 Breakout NEO-F10N, SMA (GPS-24114) | 41.50 USD; Korea 82,400 KRW (DeviceMart, overseas order ~1 week) | sparkfun.com/products/24114, devicemart.co.kr | 5 V or 3.3 V in (AP2112K), 3.3 V logic; SMA | 50.8 × 38.1 mm; USB-C (CH340C); **cut the USB-TX/RX jumpers** to use the MCU UART; RTC backup battery |
+| Waveshare LC29H(AA) GPS HAT (SKU 25278) | 39.99–54.99 USD | waveshare.com | **5 V input only**, module on a 2.8 V regulator; IPEX + IPEX-SMA cable, L1+L5 antenna included | Raspberry Pi HAT; header UART level shifting not documented — **measure before wiring to ESP32** |
+| Quectel LC29H(DA) bare module | 32,000 KRW (DeviceMart) | devicemart.co.kr | 2.8 V I/O | needs your own carrier board |
+| Waveshare GNSS L1+L5 active antenna (SKU 25346) | 16.99 USD | waveshare.com | SMA, 3 m RG174; 3.0–18 V, ≤20 mA | 50 × 50 × 19.1 mm |
+| u-blox ANN-MB5 (SparkFun GPS-25071) | 42.50 USD; Korea 72,500 KRW | sparkfun.com, devicemart.co.kr | SMA, 3 m; 3.0–5.0 V, ~17 mA (5 V) | 49.1 × 46.1 × 15.9 mm |
+
+What changes when swapping A → B (or C):
+
+- **Antenna:** must be an **L1+L5 active antenna**; the board-included GNSS antenna is L1 only. The antenna adds **~17–20 mA** while the GNSS is on.
+- **Power:** module plus antenna is roughly 40 mA while tracking, somewhat more than the L76K. The LTE modem's transmit still dominates the battery budget, but redo the power calculation in [ELECTRONICS_POWER.md](ELECTRONICS_POWER.md) before a long deployment.
+- **Wiring:** the same four wires (3.3 V, GND, TX, RX) for **B**; for **C** add a level shifter or divider on the ESP32 TX line. The power-gating rule is in [GPS_MODULE_WIRING.md](GPS_MODULE_WIRING.md). Check the module's 3.3 V rail can supply the 100 mA start-up peak.
+- **Firmware:** NMEA parsing (TinyGPSPlus) is unchanged; the v1.4 satellite list reads GSV and works with any NMEA receiver. Skip the L76K-only `$PCAS` commands, set `GPS_BAUDRATE` (38400 for B, 115200 for C), and for B consider enabling GPS L5 with UBX-CFG-VALSET (keys to be confirmed from the Integration manual).
+- **Antenna power on B:** VCC_RF is VCC − 0.1 V (≈3.2 V on 3.3 V), close to the ANN-MB5's 3.0 V minimum; check the SparkFun schematic.
+
+RTK note (option D, research only): the National Geographic Information Institute (NGII) announced free internet RTK corrections on its platform (2024-02-26; RTS1 VRS and RTS2 FKP, port 2101); vendor sources say login became mandatory on 2025-08-01 (official notice not checked). Whether LC29H(DA/EA) accepts the NGII stream is **not confirmed** (forum: it takes RTCM3 1005/1006 and MSM4/MSM7, not 103x).
+
+Decision rule (proposed): run B next to unit 1 at the same open spot for 20 minutes. If its resting fixes stay within ~2 m, make B (or a cheaper carrier board for the same module) a **kit option for narrow streams**; keep A as the default for wide rivers and cost-sensitive teams.
 
 ## Tier 2 — Reusable Robust (upgrade, USD 90–130)
 
