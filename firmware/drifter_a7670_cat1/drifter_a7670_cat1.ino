@@ -164,6 +164,11 @@ const uint32_t LAUNCH_NET_BACKOFF_MAX = 10;   // v1.3.8: 켠 직후 빠른 보�
 //     있는 기기(보호회로 차단 뒤 되살아남)는 하지 않는다.
 const uint32_t LAUNCH_FAST_MINUTES  = 60;
 const uint32_t LAUNCH_FAST_INTERVAL = 5;
+// ★v1.4.0: 켠 뒤 처음 LAUNCH_CHECK_MINUTES 분은 1분 간격으로 보낸다. 참여 팀이 설치 자리에서 위치가 잡히는지
+//   몇 분 안에 확인하게 한다(대표 261103 「1분 단위 기록도 사람들이 쓸 수 있게」). 시험판을 따로 두면 그대로 띄우는
+//   실수가 생기므로 본판에 넣고 시간이 지나면 저절로 5분, 그 뒤 평소 간격으로 돌아간다. 잠든 시간으로 센다.
+const uint32_t LAUNCH_CHECK_MINUTES  = 20;
+const uint32_t LAUNCH_CHECK_INTERVAL = 1;
 
 // ── LTE 망·전송 (v1.3, 전문가 검수 03 문서 7장) ──
 // LTE 만 쓴다(AT+CNMP=38). 2G·3G 탐색 시간을 없앤다. 모뎀이 설정을 기억하므로 다를 때만 쓴다.
@@ -735,7 +740,9 @@ uint32_t chooseIntervalM(float v, bool fastReport, bool weir) {
 uint32_t launchIntervalM(uint32_t m, float v) {
   if (rtc_launch_left_m == 0) return m;
   if (v >= 1.0f && st.tier > 1) return m;
-  return m < LAUNCH_FAST_INTERVAL ? m : LAUNCH_FAST_INTERVAL;
+  uint32_t used = LAUNCH_FAST_MINUTES > rtc_launch_left_m ? LAUNCH_FAST_MINUTES - rtc_launch_left_m : 0;   // 켠 뒤 잠든 분
+  uint32_t fast = used < LAUNCH_CHECK_MINUTES ? LAUNCH_CHECK_INTERVAL : LAUNCH_FAST_INTERVAL;
+  return m < fast ? m : fast;
 }
 
 // seq를 NVS와 동기화: 전원상실 후에도 단조증가 유지(중복 seq 방지가 목적, 갭은 허용)
