@@ -233,6 +233,14 @@ const uint8_t  GPS_FULL_TRY_EVERY   = 6;     // 짧게 기다리는 동안에도
 //   (DVDD4V2, 승압 출력)에 잇는다. 잘 때 레일을 끊으면 이 축전기가 비고, 켤 때 LDO 입력이 순간 무너진다.
 //   레일을 잘 때도 살려 두면 축전기가 차 있어 웨이크 때 돌입이 없다(모뎀은 CPOF 로 꺼진 상태).
 #define GNSS_STANDBY 1
+// ★v1.4.1: 잘 때 레일을 켜 두면 IO12(MTDI, 부팅 때 플래시 전압을 정하는 핀)가 HIGH 로 남는다. eFuse 로 플래시 전압을
+//   3.3 V 로 고정하지 않은 보드는 그 상태에서 브라운아웃, 워치독 같은 리셋이 나면 1.8 V 로 잘못 잡혀 부팅하지 못할 수 있다
+//   (1호기는 2026-11-02 대표 승인으로 XPD_SDIO_FORCE, REG, TIEH 를 구웠다). 웹 설치로 받는 참여 팀 보드는 대개 비어 있다.
+//   그래서 eFuse 세 값이 모두 켜진 보드에서만 레일을 켜 둔 채 잔다. 아니면 v1.3.3 처럼 레일을 끊고 잔다
+//   (웨이크마다 레일을 켤 때 브라운아웃이 날 수 있으나 부팅은 막히지 않는다).
+#include "esp_efuse.h"
+#include "esp_efuse_table.h"
+// standbyOk() 는 PingRec 정의 뒤에 둔다(Arduino 의 함수 원형 자동 삽입 위치 때문).
 // v1.3.5a: 켤 때 위성계를 GPS+BDS+GLONASS 로 바꾸는 명령(PCAS04,7). 창가 시험에서 v1.3.5 가 위치를 못 잡아
 // 원인을 가르려고 끌 수 있게 했다. 0 = 칩 기본 위성계 그대로(v1.3.4 와 같음).
 #ifndef L76K_MULTI_GNSS
@@ -478,6 +486,12 @@ struct PingRec {
   uint8_t  gnss_fail;       // 마지막 실패 사유(1 NMEA 없음, 2 하늘 막힘, 3 시간 초과). 0 = 없음
 };
 static_assert(sizeof(PingRec) == 96, "PingRec 크기가 바뀌면 ffid_store.h 파일 이름과 STORE_MAX 근거를 함께 고친다");
+bool standbyOk() {
+  static int v = -1;
+  if (v < 0) v = GNSS_STANDBY && esp_efuse_read_field_bit(ESP_EFUSE_XPD_SDIO_FORCE) &&
+                 esp_efuse_read_field_bit(ESP_EFUSE_XPD_SDIO_REG) && esp_efuse_read_field_bit(ESP_EFUSE_XPD_SDIO_TIEH);
+  return v == 1;
+}
 // v1.4.0 위성 목록(설명은 getFix 위 「v1.4.0 위성 목록」). 기록 본문을 만드는 곳보다 앞에 둔다.
 struct SvInfo { char sys; uint8_t prn; uint8_t el; uint16_t az; uint8_t snr; bool used; };
 const uint8_t SV_MAX = 48;
@@ -1306,6 +1320,7 @@ const uint32_t FIX_IMPROVE_MS = 15000;
 const uint32_t FIX_SETTLE_MS = 20000;
 const uint8_t  FIX_SAMPLES_MAX = 30;
 double   g_smp_lat[FIX_SAMPLES_MAX], g_smp_lon[FIX_SAMPLES_MAX];
+char     g_smp_ts[FIX_SAMPLES_MAX][24];   // v1.4.1: 표본마다 GPS 시각. 기록 시각은 가운데 표본의 시각으로 적는다
 uint8_t  g_smp_n = 0;
 double medianOf(double* a, uint8_t n) {   // 작은 배열이라 삽입 정렬
   double t[FIX_SAMPLES_MAX];
@@ -1319,7 +1334,7 @@ bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
   g_rail_on = true;
   pinMode(BOARD_GPS_WAKEUP_PIN, OUTPUT); digitalWrite(BOARD_GPS_WAKEUP_PIN, HIGH);  // 대기였으면 깨운다
   SerialGPS.begin(GPS_BAUDRATE, SERIAL_8N1, BOARD_GPS_RX_PIN, BOARD_GPS_TX_PIN);
-  l76kConfig(!(GNSS_STANDBY && rtc_gnss_kept));
+  l76kConfig(!(standbyOk() && rtc_gnss_kept));
   uint32_t start = millis();
   bool skyChecked = false;
   g_gnss_fix_s = 0xFFFF;
@@ -1355,7 +1370,7 @@ bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
         g_gnss_fix_s = (millis() - start) / 1000;
         gateEnd = millis() + FIX_SETTLE_MS;
       }
-      if (g_smp_n < FIX_SAMPLES_MAX) { g_smp_lat[g_smp_n] = la; g_smp_lon[g_smp_n] = lo; g_smp_n++; }
+      if (g_smp_n < FIX_SAMPLES_MAX) { g_smp_lat[g_smp_n] = la; g_smp_lon[g_smp_n] = lo; gpsIso8601(g_smp_ts[g_smp_n], 24); g_smp_n++; }
       if (h < bestH) {
         bestH = h;
         lat = la; lon = lo;
@@ -1366,7 +1381,10 @@ bool getFix(double &lat, double &lon, uint32_t timeoutMs = GPS_FIX_TIMEOUT_MS) {
     }
     if (have && (int32_t)(millis() - gateEnd) >= 0) {
       if (g_smp_n >= 3) { lat = medianOf(g_smp_lat, g_smp_n); lon = medianOf(g_smp_lon, g_smp_n); }
-      gpsIso8601(g_fix_ts, sizeof(g_fix_ts));   // 가운데 값의 시각은 모으기를 끝낸 때로 적는다
+      // ★v1.4.1: 시각은 모은 구간의 가운데 표본 시각으로 적는다. 떠내려가는 중(초속 0.5 m 면 20초에 10 m)에는 끝 시각으로
+      //   적으면 위치와 시각이 어긋난다. 가운데 표본에 시각이 없으면 지금 시각.
+      if (g_smp_n >= 1 && g_smp_ts[g_smp_n / 2][0]) { strncpy(g_fix_ts, g_smp_ts[g_smp_n / 2], sizeof(g_fix_ts) - 1); g_fix_ts[sizeof(g_fix_ts) - 1] = 0; }
+      else gpsIso8601(g_fix_ts, sizeof(g_fix_ts));
       Serial.printf("[FF] GPS 20초 모으기 끝: 표본 %u, 가장 낮은 HDOP %.1f 위성 %u, 위성 목록 %u, GSA %u GSV %u\n",
                     (unsigned)g_smp_n, g_fix_hdop, (unsigned)g_fix_sats, (unsigned)g_sv_n, g_nmea_gsa, g_nmea_gsv);
       if (g_gsa_last[0]) Serial.printf("[FF] 마지막 GSA: %s\n", g_gsa_last);
@@ -1530,7 +1548,7 @@ void deepSleepFor(uint32_t minutes, bool cutRail = false) {
   pinMode(BOARD_PWRKEY, OUTPUT);         digitalWrite(BOARD_PWRKEY, LOW);   // 레일이 살아 있을 때 떠 있는 PWRKEY 가 모뎀을 켜지 않게
   gpio_hold_en((gpio_num_t)BOARD_PWRKEY);
   pinMode(BOARD_POWERON, OUTPUT);
-  bool keep = GNSS_STANDBY && modemOff && !cutRail && g_rail_on;
+  bool keep = standbyOk() && modemOff && !cutRail && g_rail_on;
   if (keep) {
     digitalWrite(BOARD_POWERON, HIGH);   // L76K 대기를 위해 레일 유지(모뎀은 꺼짐 확인, 누설 약 20 µA)
     rtc_gnss_kept = true;
@@ -1538,7 +1556,7 @@ void deepSleepFor(uint32_t minutes, bool cutRail = false) {
     digitalWrite(BOARD_POWERON, LOW);    // 레일째 차단 → 다음 웨이크 냉시동
     rtc_gnss_kept = false;
     rtc_modem_maybe_on = false;          // 레일이 끊기면 모뎀도 꺼진다
-    if (GNSS_STANDBY) Serial.printf("[FF] 레일 차단하고 잠(%s)\n", !modemOff ? "모뎀 끄기 확인 못 함" : cutRail ? "저전압 park" : "이번 웨이크 레일 꺼짐");
+    if (standbyOk()) Serial.printf("[FF] 레일 차단하고 잠(%s)\n", !modemOff ? "모뎀 끄기 확인 못 함" : cutRail ? "저전압 park" : "이번 웨이크 레일 꺼짐");
   }
   gpio_hold_en((gpio_num_t)BOARD_POWERON);
   gpio_deep_sleep_hold_en();
@@ -1591,12 +1609,14 @@ void setup() {
   gpio_hold_dis((gpio_num_t)MODEM_RST);
   gpio_hold_dis((gpio_num_t)BOARD_PWRKEY);
 #if GNSS_STANDBY
+  if (standbyOk()) {
   // 홀드를 풀기 전에 출력 HIGH 로 맞춰 둔다. 안 하면 푸는 순간 핀이 입력(풀다운)으로 돌아가 레일이 잠깐 꺼진다.
   // ★v1.3.5: 레일을 켠 채 잤을 때(rtc_gnss_kept)만. 레일을 끊고 잤으면(저전압 park, 모뎀 끄기 실패) 꺼진 채로 두어
   //   배터리 전압을 레일 켜기 전에 잰다(저전압 park 판정). 레일은 getFix 나 모뎀 켜기에서 켠다.
   if (esp_reset_reason() == ESP_RST_DEEPSLEEP && rtc_gnss_kept) {
     pinMode(BOARD_POWERON, OUTPUT); digitalWrite(BOARD_POWERON, HIGH);
     g_rail_on = true;
+  }
   }
 #endif
   gpio_hold_dis((gpio_num_t)BOARD_POWERON);
@@ -1611,8 +1631,9 @@ void setup() {
   floatee::loadOrCreate(ident);
   Serial.printf("[FF] device_id=%s  등록 https://floatee.caresea.kr/start\n", ident.device_id);
   if (esp_reset_reason() != ESP_RST_DEEPSLEEP) floatee::listenWindow(Serial, ident, FW_VERSION, 3000);
-  Serial.printf("[FF] fw %s %s 빌드 (USE_WIFI=%d BENCH_HTTP=%d GNSS_STANDBY=%d)\n", FW_VERSION,
-                RELEASE_BUILD ? "방류" : "벤치", USE_WIFI, BENCH_HTTP, GNSS_STANDBY);
+  Serial.printf("[FF] fw %s %s 빌드 (USE_WIFI=%d BENCH_HTTP=%d GNSS_STANDBY=%d, eFuse 3.3V 고정 %s → 잘 때 레일 %s)\n", FW_VERSION,
+                RELEASE_BUILD ? "방류" : "벤치", USE_WIFI, BENCH_HTTP, GNSS_STANDBY,
+                standbyOk() ? "예" : "아니오", standbyOk() ? "유지" : "끊음");
 #if !USE_WIFI && !BENCH_HTTP
   if (!PROD_CA_PEM[0]) Serial.println("[FF] 주의: PROD_CA_PEM 이 비었다. 서버 인증서를 검증하지 않는다(README 보안 절)");
 #endif
@@ -1726,7 +1747,7 @@ void setup() {
       gpsTimeout = GPS_FIRST_FIX_TIMEOUT_MS;
       Serial.printf("[FF] 전원 투입 첫 회차 → 위치를 최대 %lu초 기다림\n", (unsigned long)(gpsTimeout / 1000));
     }
-    if (GNSS_STANDBY && rtc_gnss_kept)
+    if (standbyOk() && rtc_gnss_kept)
       Serial.printf("[FF] GNSS 대기에서 깸(직전 잠 %lu분, 온시동 기대 %s)\n", (unsigned long)st.last_sleep_m,
                     st.last_sleep_m <= GNSS_WARM_MAX_MIN ? "예" : "아니오");
     uint32_t gt0 = millis();
