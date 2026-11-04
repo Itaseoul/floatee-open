@@ -44,7 +44,7 @@ Reference firmware: [`drifter_a7670_cat1/drifter_a7670_cat1.ino`](drifter_a7670_
 
 ## Configure
 
-- `DEVICE_ID` — pair it with the unit metadata directory `unit_id` (schema §3).
+- Device ID — not a setting since v1.3.1. Each board creates its own from the chip ID (`ff-` + 12 hex digits) and prints it on the serial monitor. Use it when you register the device.
 - `APN` for your SIM (Soracom `soracom.io` user/pass `sora`; 1NCE `iot.1nce.net`; KT MVNO `lte.ktfwing.com`; SKT MVNO `lte.sktelecom.com`; LG U+ and U+ MVNOs such as HelloMobile `internet.lguplus.co.kr`). The A7670G covers the LTE bands of all three Korean carriers (B1/B3/B5/B7/B8). The "no LG U+" limit applies only to **global IoT roaming SIMs** (1NCE / Soracom roam on KT/SKT only); a participant's own domestic LG U+ SIM is fine on paper, but not yet tested on this board. In Korea use a **voice-inclusive plan** and activate the SIM in a phone first, then move it to the board.
 - `SERVER_HOST` / `SERVER_PATH` — bench with the bundled `ingest_server.py` (`BENCH_HTTP 1`), then promote to HTTPS (`BENCH_HTTP 0`).
 - `ADAPTIVE_INTERVAL` — `true` by default (voltage-adaptive interval). For bench tests set it to `false` **together with** `SLEEP_MINUTES = 5`; otherwise the voltage tiers override `SLEEP_MINUTES`.
