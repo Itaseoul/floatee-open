@@ -47,7 +47,7 @@
  *   LittleFS 자동 포맷 막기, L76K 설정 명령, 고정 품질 기다리기, GNSS 실패 횟수 싣기. 자세한 것은 CHANGELOG.
  */
 
-#define FW_VERSION "1.4.1"
+#define FW_VERSION "1.4.2"
 
 // ── 빌드 종류 (v1.3, 2026-09-28) ──────────────────────────────────────────────
 // 1 = 방류본(기본). USE_WIFI 0 · BENCH_HTTP 0 · USE_INA219 0 이 강제된다(LTE + HTTPS, 운영 서버).
@@ -553,6 +553,7 @@ RTC_NOINIT_ATTR uint8_t rtc_crash_n;
 // ★v1.3.5 모뎀이 켜져 있을 수 있나. 모뎀을 켤 때 참, 끄기를 확인하면 거짓. 잠들 때 모뎀 끄기 판단에 쓴다.
 RTC_DATA_ATTR bool rtc_modem_maybe_on = false;
 bool g_modem_talked = false;   // 이번 웨이크에 모뎀이 AT 에 한 번이라도 답했나
+uint8_t g_died_stage = 0;     // 직전 리셋 때의 단계. v1.4.2 사고 리셋 판정용
 bool g_rail_on = false;        // 이번 웨이크에 IO12 레일이 켜져 있나(v1.3.5)
 
 // ── 리셋에도 살아야 하는 상태(v1.3 「순단 복구」) ──
@@ -715,7 +716,7 @@ bool isWinter() {
 // 이번 웨이크의 송신 보류 문턱
 float skipTxV() {
   float v = BATT_SKIP_TX_V + (isWinter() ? WINTER_TX_RAISE_V : 0.0f) + st.tx_raise_v;
-  if (g_reset == ESP_RST_BROWNOUT || g_tx_interrupted) v += DROOP_RAISE_V;   // 방금 송신에서 쓰러졌으면 한 번 더 보수적으로
+  if ((g_reset == ESP_RST_BROWNOUT && g_died_stage >= 3) || g_tx_interrupted) v += DROOP_RAISE_V;   // 방금 송신에서 쓰러졌으면 한 번 더 보수적으로
   return v;
 }
 float lastReportV() { return V_LAST + (isWinter() ? WINTER_TX_RAISE_V : 0.0f) + st.tx_raise_v; }
@@ -1647,6 +1648,7 @@ void setup() {
   rtc_cold_mark = COLD_MARK;
   {
     uint8_t died = rtc_stage;
+    g_died_stage = died;
     prefs.begin("ffbo", false);
     if (g_reset == ESP_RST_BROWNOUT && !g_cold && died >= 1 && died <= 8) {
       char k[4] = {'s', (char)('0' + died), 0, 0};
@@ -1662,7 +1664,9 @@ void setup() {
   // ── 재부팅 고리 끊기(v1.3.5) ── 웨이크 중 브라운아웃, 워치독, 패닉이면 사고 리셋으로 센다.
   //   v1.3.4 에서 웨이크 때 레일을 켜는 순간의 브라운아웃을 고쳐서 평상 웨이크는 사유 8(딥슬립)이다.
   {
-    bool crashy = (g_reset == ESP_RST_BROWNOUT && !g_cold) || g_reset == ESP_RST_TASK_WDT || g_reset == ESP_RST_WDT ||
+    // ★v1.4.2: 레일을 켜고 위치를 받는 단계(1, 2)의 브라운아웃은 세지 않는다. 슬립 중 레일을 끊는 보드(eFuse 미설정)는
+    //   깨어날 때마다 여기서 2~4회 쓰러진다(1호기 2026-11-02 실측). 이것을 송신 고리로 세면 접속이 멈춘다.
+    bool crashy = (g_reset == ESP_RST_BROWNOUT && !g_cold && g_died_stage >= 3) || g_reset == ESP_RST_TASK_WDT || g_reset == ESP_RST_WDT ||
                   g_reset == ESP_RST_PANIC || g_reset == ESP_RST_INT_WDT;
     if (g_cold || rtc_crash_n > 20) rtc_crash_n = 0;   // RTC_NOINIT 쓰레기값 거르기
     if (crashy) rtc_crash_n++;
@@ -1727,12 +1731,12 @@ void setup() {
   // ★v1.3.5: 사고 리셋이 잠들기 전에 2번 이상이면 바로 다시 보내지 않는다(송신 → 리셋 → 송신 고리).
   //   접속 실패 1회로 쳐서 백오프(60분부터)에 맡긴다. GNSS 기록은 그대로 남긴다.
   bool resumeTx = g_tx_interrupted && storeCount() > 0 && rtc_crash_n < 2;
-  if (rtc_crash_n >= 2) {
-    st.last_net_fail = true;
-    if (st.net_fails < 255) st.net_fails++;
-    st.min_since_try = 0;
-    Serial.printf("[FF] 사고 리셋 %u번 연속 → 바로 다시 보내지 않고 백오프\n", (unsigned)rtc_crash_n);
-  }
+  // ★v1.4.2: 접속 실패 횟수와 경과 시간을 건드리지 않고, 이번 웨이크만 모뎀을 켜지 않고 잔다. 잠들면 rtc_crash_n 이
+  //   지워지므로 다음 웨이크에 다시 시도한다. v1.3.5~v1.4.1 은 net_fails 를 올리고 min_since_try 를 0 으로 되돌려,
+  //   웨이크마다 브라운아웃이 나는 보드에서 접속 실패 한 번 뒤 모뎀을 다시 켜지 못할 수 있었고(코드 검토),
+  //   net_fails 가 0 에서 1 이 되는 첫 단계에서는 슬립 없이 송신을 되풀이할 수 있었다.
+  const bool skipNetThisWake = rtc_crash_n >= 2;
+  if (skipNetThisWake) Serial.printf("[FF] 사고 리셋 %u번 연속 → 이번 회차는 모뎀을 켜지 않고 잔다\n", (unsigned)rtc_crash_n);
 
   // ① GPS fix 먼저(망 없어도 관측은 남긴다 — store-and-forward의 요점)
   double lat = 0, lon = 0;
@@ -1861,6 +1865,10 @@ void setup() {
 
   // ② 망 접속 → 버퍼 플러시
   // 접속 실패가 이어지면 모뎀 재시도 간격을 늘린다(좌초 의심이면 바로 최대치). 이어 보내기는 백오프를 건너뛴다.
+  if (skipNetThisWake) {
+    Serial.printf("[FF] 이번 회차 모뎀 생략, 저장 %u건\n", (unsigned)storeCount());
+    deepSleep();
+  }
   uint32_t backoffM = 0;
   // ★v1.3.8: 첫 실패 한 번은 다음 웨이크에 바로 다시 시도한다(쉬지 않는다). v1.3.7 까지는 한 번만 실패해도
   //   60분을 쉬어, 창가에서 위치 4건을 잡고도 1시간 무신호였다(1호기 2026-11-03 07:41~). 연속 두 번째부터 60→120→240분.
