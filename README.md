@@ -36,30 +36,30 @@ Open-source hardware spreads on a few strong universal rules plus local adaptati
 3. Do no harm to the water or its users. Smooth non-entangling shapes, avoid protected areas and seasons, tell nearby water users.
 4. Own your deployment, follow your local rules. See [docs/DEPLOY_responsibly.md](docs/DEPLOY_responsibly.md).
 
-## Choose your tier
+## Current build: PET-bottle drifter (v4)
 
-| | Tier 0 Phone-in-a-Bottle | Tier 1 Cellular Bottle (default) | Tier 2 Reusable Robust |
-|---|---|---|---|
-| Brain | reused smartphone + GPSLogger | ESP32 cellular board | ESP32 cellular board |
-| Housing | upcycled PET bottle + dry bag | upcycled PET bottle | bolt-sealed IP case |
-| Approx cost | USD 5–35 | USD 50–70 | USD 90–130 |
-| Best for | first pipeline test, any budget | the default upcycled float | long / cold / repeated campaigns |
+One build, no tiers: a 1.5 L round carbonated-drink PET bottle that floats on its side, about half submerged. **No 3D printer is needed.** Status: testing; the water test is not done yet, so parts and steps may change. Parts cost about KRW 100,000 per unit (2026-09 prices), SIM fees separate.
 
-The tiers above are the historical reference. The current build for participants is **one participant kit** (about KRW 92,908 including the board; see [hardware/BOM.md](hardware/BOM.md)): recommended housing is a **1.5 L wide-mouth screw-lid container** (a PET bottle is for demos and short runs only), with a flat solar panel on the lid.
+It is DIY. The body and part positions can change as long as the build meets the [eight conditions](https://floatee.caresea.kr/manual#diy).
 
-Full parts list: [hardware/BOM.md](hardware/BOM.md). Reference board is the LILYGO T-A7670G R2 with onboard L76K GNSS (cellular LTE Cat.1 bis + separate GPS chip). Pick the A7670 band variant for your region.
+| Part | Current default |
+|---|---|
+| Board | LILYGO T-A7670G R2 (External GPS), GPS and LTE antennas included |
+| Power | Protected 18650 cell, 6 V 220 mA panel (84×112 mm), 5.6 V 5 W Zener |
+| Body | 1.5 L round carbonated-drink PET bottle, cut and rejoined with a PVC 75A ring, self-fusing tape and two SUS316 hose clamps |
+| Waterproofing | Two vacuum-bag layers, silica gel, humidity card |
+| Weight | Two steel flat bars (about 407 g) in a closed-cell PE foam cradle, trim washers |
+| Recovery and marking | Bottle neck and cap lip for gripping, steel washer inside the cap, contact label, reflective tape |
 
-**Tier 1.5 (solar-assisted, long-dwell estuary)** — a 6 V flat panel SZH-SPB017 (84×112 mm, 220 mA) mounted outside on the container lid extends reporting life for units that linger in-coverage for weeks; the panel is included in the participant kit. (Earlier wrap-around thin-film cells are no longer used.) ★Solar extends power, not coverage (open sea still needs satellite). See [hardware/TIER1_5_SOLAR_DRIFTER.md](hardware/TIER1_5_SOLAR_DRIFTER.md).
+- 3D assembly: [https://floatee.caresea.kr/hardware](https://floatee.caresea.kr/hardware)
+- Build manual (Korean): [https://floatee.caresea.kr/manual](https://floatee.caresea.kr/manual), [docs/조립_가이드.md](docs/조립_가이드.md)
+- Parts list: [https://floatee.caresea.kr/welcome/parts](https://floatee.caresea.kr/welcome/parts), [hardware/BOM.md](hardware/BOM.md)
 
-## 3D printed parts (parametric, OpenSCAD)
+Reference board notes: cellular LTE Cat.1 bis plus a separate L76K GPS chip; pick the A7670 band variant for your region.
 
-The housing is an upcycled bottle, so only three small printed inserts are needed. Sources are parametric OpenSCAD, so you measure your own bottle and edit one file.
+## Earlier designs (archived)
 
-- `hardware/cad/electronics_bracket.scad` holds the board and cell, self-locating in the bottle
-- `hardware/cad/ballast_keel.scad` carries lead-free weight low for self-righting
-- `hardware/cad/recovery_loop.scad` a smooth closed loop for pole/net recovery
-
-Each ships as `.scad` (editable source) and `.stl` (print + GitHub renders it in 3D); export `.3mf` for slicers. (OpenSCAD is mesh-based, so no true STEP — see [hardware/cad/README.md](hardware/cad/README.md); the foam template exports `.dxf`.) Preview: `hardware/cad/assembly.png`.
+The tier table (phone, cellular bottle, robust case), the wide-mouth container build and the 3D-printed inserts in `hardware/cad/` were earlier drafts. They stay for reference and forks but are not the current build: [https://floatee.caresea.kr/archive/hardware-printed](https://floatee.caresea.kr/archive/hardware-printed).
 
 ## Firmware
 
@@ -83,8 +83,8 @@ Build a unit, release and recover it in your river, POST trajectories, add your 
 
 네 가지 규칙: (1) 회수한다 (2) 안전 전원·무독성 (3) 물·이용자·야생동물 무해 (4) 네 배포는 네가 책임·지역 규정 확인. 상세 [docs/DEPLOY_responsibly.md](docs/DEPLOY_responsibly.md).
 
-티어: Tier 0 폰+페트병(USD 5–35) / Tier 1 셀룰러+페트병(USD 50–70) / Tier 2 재사용 견고(USD 90–130) / Tier 3 이리듐 위성형(연구용, KC 확인 전 채택 안 함). 지금 참여자에게 권하는 것은 티어 구분 없는 **참여자 키트 한 가지**(보드 포함 약 92,908원)다. 하우징은 **1.5L 광구 용기(나사 뚜껑)**를 권장하며, 페트병은 시연이나 단기용으로 사용한다. 뚜껑 바깥에 6V 평판 패널 SZH-SPB017(84×112 mm, 220 mA)을 얹는다. 해당 패널은 키트에 들어 있다. 보고 간격은 전압에 따라 60~720분으로 바뀐다. 부품표 [hardware/BOM.md](hardware/BOM.md). 기준 보드는 LILYGO T-A7670G R2(온보드 L76K)이다.
+지금 기본형: 1.5L 둥근 탄산음료 페트병을 옆으로 눕혀 띄우는 드리프터(페트병형 v4, 시험 중). 3D 프린터는 필요 없습니다. DIY 이므로 조건을 지키면 용기와 부품 위치를 바꿀 수 있습니다. 3D 조립도 https://floatee.caresea.kr/hardware , 제작 매뉴얼 https://floatee.caresea.kr/manual , 부품 목록 https://floatee.caresea.kr/welcome/parts .
 
-하우징으로 폐페트병을 사용하므로 3D 프린트 부품은 브래킷, 밸러스트 킬, 회수 고리 3개뿐이다. 파라메트릭 OpenSCAD 프로그램이므로 병 규격만 바꾸면 된다. 전력·신뢰성 상세는 [hardware/ELECTRONICS_POWER.md](hardware/ELECTRONICS_POWER.md)·[hardware/RELIABILITY.md](hardware/RELIABILITY.md). 이 리포는 레퍼런스 설계이며 현장 검증(대량 방류 실증)은 준비 중이다.
+티어 표, 광구 용기형, `hardware/cad/` 의 3D 프린트 부품은 초기 설계안으로 남겨 둔 기록입니다(https://floatee.caresea.kr/archive/hardware-printed).
 
 전체 글로벌 가이드: [docs/OPEN_HARDWARE_BOM_global_ko.md](docs/OPEN_HARDWARE_BOM_global_ko.md).

@@ -1,3 +1,5 @@
+> **Archived.** This describes an earlier draft (tiers, wide-mouth container or 3D-printed inserts). The current build is the PET-bottle drifter v4: [https://floatee.caresea.kr/hardware](https://floatee.caresea.kr/hardware).
+
 # Drawings
 
 Dimensioned assembly drawings (PDF) and 2D cut files (DXF) go here.

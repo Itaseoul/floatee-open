@@ -1,10 +1,12 @@
+> **Archived.** This describes an earlier draft (tiers, wide-mouth container or 3D-printed inserts). The current build is the PET-bottle drifter v4: [https://floatee.caresea.kr/hardware](https://floatee.caresea.kr/hardware).
+
 # CAD — full real-size assembly (parametric OpenSCAD)
 
 The housing is an upcycled PET bottle. Three printed inserts + one cut part (foam collar) + real-size mockups of everything else, so the **complete Tier-1 drifter exists as a real-dimension 3D assembly**. All parametric: open `params.scad`, set your measured bottle inner diameter and board/cell sizes, and everything updates.
 
 ## Open CAD — three layers
 
-1. **Web viewer** (rotate · explode slider · per-part toggle): https://uploads.caresea.kr/seacut/hardware/index.html
+1. **Web viewer** (rotate · explode slider · per-part toggle): https://floatee.caresea.kr/archive/hardware-printed
 2. **GitHub STL** — every `.stl` below renders in 3D in the browser.
 3. **OpenSCAD parametric source** — the editable master (OSHWA prefers editable originals).
 

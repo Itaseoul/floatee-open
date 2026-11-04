@@ -4,22 +4,31 @@ Parts by function and generic spec first, then a globally shipping reference par
 
 Reference board is the LILYGO T-A7670G R2 with onboard L76K GNSS. It is cellular (LTE Cat.1 bis) plus a separate GPS chip. It is not satellite. Do not substitute the SIM7080G (LTE-M/NB-IoT), which has no verified attach on Korean commercial networks.
 
-## Participant kit (current, 2026-09-26)
+## Current build: PET-bottle v4 (2026-11-04)
 
-The tiers below are kept as the reference design. What participants build now is **one kit, no tiers**, each participant buying one unit in their own name. Total about **KRW 92,908** (electronics 60,808 · SIM 8,800 · housing and waterproofing 21,500 · recovery 1,800; KRW 42,950 without the board). Board, cell, PCM, panel and SIM are retail prices; the rest are estimates, and the container product is not yet chosen.
+The current default. Status: testing, water test not done yet. Parts about **KRW 100,000 per unit** (2026-09 prices), SIM fees separate. Korean list with shops: [https://floatee.caresea.kr/welcome/parts](https://floatee.caresea.kr/welcome/parts). It is DIY: the body can change as long as the build meets the [conditions](https://floatee.caresea.kr/manual#diy).
 
-| Group | Part | Spec |
-|---|---|---|
-| Electronics | LILYGO T-A7670G R2 (External GPS) | ESP32-WROVER-E + A7670G LTE Cat.1 + L76K GPS, antennas and PH2.0 power lead included |
-| Electronics | 18650 cell | **default (2026-10-30): a protected cell** (protection circuit built in; PET-bottle v4 uses a Samsung SDI 35E-based protected cell, 18.5×69 mm, button top). This wide-mouth branch was built with an unprotected Samsung 30Q in an external holder through the PCM below; **an unprotected cell always goes through a PCM** |
-| Electronics | PCM (protection module, cuts over-discharge, over-charge and short circuit) | 3.7 V 1-cell, continuous ≥3 A (LTE peak about 2 A) |
-| Electronics | Solar panel SZH-SPB017 | 6 V 220 mA, 84×112 mm, outside on the lid, into board JST P1 (SOLAR_IN) |
-| Electronics | Zener 1N5339B | 5.6 V 5 W, across the panel leads; protects the on-board CN3065 (absolute max 6.5 V) |
-| SIM | Participant's own domestic nano SIM | any domestic SIM in the participant's own name, any carrier (the A7670G covers all three Korean carriers' LTE bands; no carrier has been confirmed on this board yet), ordinary voice-and-data plan, activate in a phone first |
-| Housing | 1.5 L wide-mouth container | screw lid + gasket, flat top that seats the 84×112 panel; PG7 gland; neutral-cure silicone; epoxy |
-| Moisture | 5 g silica gel + humidity indicator card | sealed by default; ePTFE vent M12 optional |
-| Recovery | 430 stainless plate Ø40×1 mm, retro-reflective tape, contact label, paracord loop, orange/yellow tape | the plate is for a drone electromagnet (see [PRELAUNCH_RECOVERY_CHECKLIST.md](PRELAUNCH_RECOVERY_CHECKLIST.md)) |
-| Optional | NTC 10 kΩ B3950 + 28.7 kΩ | 0 ℃ charge cutoff, replaces R9; before Incheon / winter releases |
+| Group | Part | Spec | Qty |
+|---|---|---|---|
+| Electronics | LILYGO T-A7670G R2 (External GPS) | ESP32-WROVER-E, A7670G, L76K; GPS patch and LTE antenna included | 1 |
+| Electronics | Protected 18650 cell | button top, 18.5×69 mm, protection circuit built in | 1 |
+| Electronics | Solar panel SZH-SPB017 | 6 V 220 mA, 84×112 mm | 1 |
+| Electronics | Zener onsemi 1N5339BG | 5.6 V 5 W, panel input protection | 1 |
+| SIM | Nano SIM | ordinary voice and data plan, any carrier | 1 |
+| Body | Round carbonated-drink PET bottle | 1.5 L with cap, not a water bottle; or a household sealed container | 1 |
+| Body | PVC pipe 75A VG2 ring | 89 mm outside diameter, cut to 30 mm | 1 |
+| Body | SUS316 hose clamps | 80–100 mm | 2 |
+| Body | Self-fusing silicone tape | 24 mm × 3.2 m | 2 rolls |
+| Waterproofing | Vacuum bag roll | 20 cm wide, two layers | about 0.6 m |
+| Waterproofing | Silica gel, humidity card | 30 g; mixed card | 2; 2 |
+| Buoyancy | Closed-cell PE foam | 20 mm thick; floats, cradle, stops, strips | about 490 cm³ |
+| Weight | Rolled steel flat bars | 54×40×12 mm, about 407 g together | 2 |
+| Weight | M12 stainless flat washers | for trim | 0–5 |
+| Winter charge protection | NTC 10K 3950 probe, chip resistor 24.9 kΩ 1% | see the manual before winter use | 1; 1 |
+| Fixing, marking | Cable ties, contact labels, yellow reflective tape | 100 mm; 28×65 mm; 40 mm wide | 2; 4; about 0.6 m |
+| Recovery | Zinc-plated steel M12 washer | inside the cap, for a magnet | 1 |
+
+**Everything below is archived.** The tiers, the wide-mouth container kit and the printed inserts are earlier drafts kept for reference.
 
 ## Tier 0 — Phone-in-a-Bottle (USD 5–35)
 

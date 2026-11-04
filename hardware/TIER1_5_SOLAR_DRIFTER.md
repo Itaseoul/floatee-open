@@ -1,3 +1,5 @@
+> **Archived.** This describes an earlier draft (tiers, wide-mouth container or 3D-printed inserts). The current build is the PET-bottle drifter v4: [https://floatee.caresea.kr/hardware](https://floatee.caresea.kr/hardware).
+
 # hardware/TIER1_5_SOLAR_DRIFTER.md — 솔라 보조 드리프터 (장기 잔류·회수 보험 변형)
 
 > **한 줄 요약 (2026-09-26 갱신)**: 셀룰러 드리프터에 **6V 평판 패널 SZH-SPB017(84×112 mm, 220 mA)**을 **용기 뚜껑 위 바깥**에 얹어, 하구 장기 잔류(주+) 임무에서 보고 수명을 늘린다. 패널은 이제 **참여자 키트에 기본 포함**된다. 충전은 보드의 흰색 JST **P1(POWR → SOLAR_IN)** 과 보드 내장 **CN3065**로 하고, 입력은 **제너 5.6V 5W(1N5339B)**로 자른다(CN3065 절대최대 6.5V). 하우징은 **1.5L 광구 용기(나사 뚜껑)**가 기본이다. ★**솔라는 전력을 늘리지 커버리지를 늘리지 않는다** — 셀룰러 범위 안 장기 잔류(하구 체류·연안 배회·좌초)에서만 값을 하고, 외해 이탈은 위성(Tier 3 = 이리듐, 연구용, KC 확인 전 채택 안 함)의 영역이다.

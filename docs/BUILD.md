@@ -1,3 +1,5 @@
+> **Archived.** This describes an earlier draft (tiers, wide-mouth container or 3D-printed inserts). The current build is the PET-bottle drifter v4: [https://floatee.caresea.kr/hardware](https://floatee.caresea.kr/hardware).
+
 # Build guide (outline)
 
 Step-by-step in the Precious Plastic Academy spirit: short steps, a photo or short clip per step. This is the outline; fill each step with a photo as you build your first unit.

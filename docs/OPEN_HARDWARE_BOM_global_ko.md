@@ -1,3 +1,5 @@
+> **보관본입니다.** 이전 설계안(티어, 광구 용기, 3D 프린트 부품)을 설명합니다. 지금 기본형은 페트병형 v4 입니다: [https://floatee.caresea.kr/hardware](https://floatee.caresea.kr/hardware)
+
 # SEA:CUT / Friendly Floaty — 글로벌 온보딩·지역 선택 (한국어판)
 
 [`OPEN_HARDWARE_BOM_global.md`](OPEN_HARDWARE_BOM_global.md)의 한국어판이다. 원문(영어)과 내용을 일치시킨다. 기술 용어와 식별자는 원어 그대로 둔다.

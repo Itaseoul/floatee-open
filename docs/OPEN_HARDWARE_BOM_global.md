@@ -1,3 +1,5 @@
+> **Archived.** This describes an earlier draft (tiers, wide-mouth container or 3D-printed inserts). The current build is the PET-bottle drifter v4: [https://floatee.caresea.kr/hardware](https://floatee.caresea.kr/hardware).
+
 # SEA:CUT / Friendly Floaty — Global Onboarding & Regional Selection
 
 An open-source, non-profit river-to-sea litter drifter: a low-cost GPS + cellular float you release into a river, track from anywhere, and **recover**. It maps how floating trash travels from source to sea so communities know where to place booms and cleanups.
