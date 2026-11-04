@@ -62,7 +62,7 @@ For missions where a unit **dwells in-coverage for weeks** (estuary retention �
 |---|---|---|---|
 | Solar panel | **6 V flat panel** mounted **outside on the container lid**, cable through a PG7 gland, epoxy on the panel back. (The earlier wrap-around thin-film design is no longer used: cut film changes voltage/current, loses busbars and leaks at the cut.) | SZH-SPB017, 6 V 220 mA, 84×112 mm (open-circuit voltage not yet measured) | ~2.5 |
 | Charge control | ★**on-board CN3065** via the board's white JST **P1 (SOLAR_IN)**; a **5.6 V 5 W zener (1N5339B)** across the panel leads clamps the input, because the CN3065 absolute maximum is 6.5 V. No external charger module | 1N5339B zener | ~0.4 |
-| Low-temp cutoff | **optional**: 0 ℃ charge cutoff with an NTC; fit it before Incheon / winter releases (January mean minimum −4.8 ℃ in Incheon) | NTC 10 kΩ B3950 + 28.7 kΩ 1 % resistor, replaces R9 | 0.4 |
+| Low-temp cutoff | **optional**: low-temperature charge cutoff with an NTC. Without it, cover the panel and recover within 3 to 5 days when frost is forecast (January mean minimum −4.8 ℃ in Incheon) | NTC 10 kΩ B3950 + 24.9 kΩ 1 % resistor, replaces N9 (about 3 ℃, calculated; see the manual) | 0.4 |
 | Isolation diode | not in the participant kit BOM; whether one is needed is to be confirmed on the bench (확인 필요) | — | — |
 | Vent | **optional**. Default is **sealed + 5 g silica gel + humidity indicator card**, closed indoors in dry air; decide on an ePTFE vent (M12) after the bench immersion test | ePTFE vent M12 | ~2 |
 | Extra foam | buoyancy must be **recalculated for the 1.5 L wide-mouth container** once the product is chosen (panel, PCM, holder and steel plate add mass) | closed-cell EVA sheet | ~1 |
